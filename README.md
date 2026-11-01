@@ -19,13 +19,13 @@ Manifest V3 扩展，包含三个功能位：
 ## API Key
 
 翻译使用腾讯云 TokenHub 的 `hy-mt2-lite` 模型。
-API Key 在**弹窗 →「段落翻译」→ API Key** 中填写，点「保存」或按回车生效：
+API Key 在**弹窗 →「段落翻译」→ API Key** 中填写，回车或失焦即保存：
 
 ```
 sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-- 保存后输入框清空，占位提示显示掩码（如 `已保存 sk-z…THK`），方便确认已生效。
+- 保存后输入框清空，占位符变为密钥掩码（如 `sk-z…hTHK`），方便确认已生效。
 - 密钥保存在 `chrome.storage.local`，只由后台 Service Worker 读取；
   内容脚本与网页都拿不到密钥。
 - 不再从扩展目录的 `key` 文件读取；如果旧版本留下过 `key` / `key.txt`，可以直接删除。

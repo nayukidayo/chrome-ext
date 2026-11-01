@@ -164,29 +164,6 @@ h2 {
   opacity: 0.6;
 }
 
-.btn-inline {
-  flex: 0 0 auto;
-  padding: 4px 9px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--fg);
-  font: inherit;
-  font-size: 11.5px;
-  cursor: pointer;
-  transition: border-color 0.15s, color 0.15s;
-}
-
-.btn-inline:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.btn-inline:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
 .hint {
   margin: 6px 0 0;
   color: var(--muted);

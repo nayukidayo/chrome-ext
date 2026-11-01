@@ -5,7 +5,6 @@ const proxyBadge = document.getElementById('proxy-badge');
 const proxyHint = document.getElementById('proxy-hint');
 const proxyServerInput = document.getElementById('proxy-server');
 const apiKeyInput = document.getElementById('api-key');
-const apiKeySaveBtn = document.getElementById('api-key-save');
 const keyHint = document.getElementById('key-hint');
 const translateToggle = document.getElementById('translate-toggle');
 const versionEl = document.getElementById('version');
@@ -140,10 +139,16 @@ function renderApiKey(state) {
   const { hasApiKey, apiKeyMasked } = state;
 
   apiKeyInput.value = '';
-  apiKeyInput.placeholder = hasApiKey ? `已保存 ${apiKeyMasked}，重新输入可覆盖` : 'sk-...';
+  // 已保存时占位符直接显示密钥掩码
+  apiKeyInput.placeholder = hasApiKey ? apiKeyMasked : 'sk-...';
 
-  if (hasApiKey) setKeyHint(`已保存 ${apiKeyMasked}`, false);
-  else setKeyHint('尚未填写 API Key，翻译前请先填写。', true);
+  if (hasApiKey) {
+    keyHint.textContent = KEY_HINT_DEFAULT;
+    keyHint.classList.add('muted');
+    keyHint.classList.remove('warn');
+  } else {
+    setKeyHint('尚未填写 API Key，翻译前请先填写。', true);
+  }
 }
 
 async function refreshApiKey() {
@@ -158,31 +163,27 @@ async function saveApiKey() {
   const value = apiKeyInput.value.trim();
 
   if (!value) {
-    keyHint.textContent = KEY_HINT_DEFAULT;
-    keyHint.classList.add('muted');
-    keyHint.classList.remove('warn');
-    apiKeyInput.focus();
+    // 没输入内容：恢复成已保存状态的提示，不覆盖原有密钥
+    await refreshApiKey();
     return;
   }
 
-  apiKeySaveBtn.disabled = true;
   try {
     renderApiKey(await send({ type: 'apikey:set', apiKey: value }));
   } catch (error) {
+    // 失败时保留输入内容，方便修正
     setKeyHint(error.message, true);
-  } finally {
-    apiKeySaveBtn.disabled = false;
   }
 }
 
-apiKeySaveBtn.addEventListener('click', () => {
+apiKeyInput.addEventListener('change', () => {
   void saveApiKey();
 });
 
 apiKeyInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') {
     event.preventDefault();
-    void saveApiKey();
+    apiKeyInput.blur(); // 交给 change 事件保存
   }
 });
 
