@@ -18,9 +18,20 @@
       </div>
 
       <div class="segmented" role="radiogroup" aria-label="代理模式">
-        <button type="button" data-mode="system" role="radio" aria-checked="false">系统代理</button>
+        <button type="button" data-mode="proxy" role="radio" aria-checked="false">走代理</button>
         <button type="button" data-mode="direct" role="radio" aria-checked="false">直连</button>
       </div>
+
+      <label class="field">
+        <span>代理地址</span>
+        <input
+          id="proxy-server"
+          type="text"
+          spellcheck="false"
+          autocomplete="off"
+          placeholder="http://127.0.0.1:10801"
+        />
+      </label>
 
       <p id="proxy-hint" class="hint">切换后对所有网站生效。</p>
     </section>

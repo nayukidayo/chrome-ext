@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "工具箱：代理切换 + 段落翻译",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "在系统代理与直连之间快速切换；按住 Ctrl 点击网页段落，即可用 HY-MT2-Lite 翻译成中文，再次点击隐藏译文。",
   "minimum_chrome_version": "114",
   "permissions": ["proxy", "storage"],

@@ -1,7 +1,8 @@
 /**
  * 后台 Service Worker
  *
- * 1) 代理切换：在「跟随系统代理(system)」与「直连(direct)」之间切换（chrome.proxy）
+ * 1) 代理切换：在「走本地代理(fixed_servers)」与「直连(direct)」之间切换（chrome.proxy）
+ *    —— 用 fixed_servers 而非 system，是为了给翻译接口加 bypassList（直连）
  * 2) 段落翻译：调用腾讯云 TokenHub 的 hy-mt2-lite（OpenAI 兼容 /v1/chat/completions）
  *
  * API Key 存放在扩展目录的 key 文件中（纯文本，一行），
@@ -22,7 +23,27 @@ const ENDPOINTS = [
 ];
 
 const KEY_FILES = ['key', 'key.txt'];
-const PROXY_MODES = new Set(['system', 'direct']);
+
+/**
+ * 代理配置
+ *
+ * 使用 fixed_servers 而不是 system，因为 system 模式不允许附带 bypassList；
+ * 有了绕过列表，翻译请求（TokenHub）就可以直连，不依赖代理是否在运行。
+ */
+const DEFAULT_PROXY_SERVER = 'http://127.0.0.1:10801';
+const PROXY_MODES = new Set(['proxy', 'direct']);
+const PROXY_SCHEMES = new Set(['http', 'https', 'socks4', 'socks5', 'quic']);
+const PROXY_DEFAULT_PORTS = { http: 80, https: 443, socks4: 1080, socks5: 1080, quic: 443 };
+
+/** 不走代理的主机：TokenHub 直连，其余走本地代理 */
+const PROXY_BYPASS_LIST = [
+  '*.tencentmaas.com',
+  '*.tencentmaas.cn',
+  'localhost',
+  '127.0.0.1',
+  '[::1]',
+  '<local>'
+];
 
 /** 简易 LRU 上限，避免 Service Worker 内存无限增长 */
 const CACHE_LIMIT = 400;
@@ -223,8 +244,56 @@ function proxyGet(details) {
   });
 }
 
+/** 解析 "http://127.0.0.1:10801" / "127.0.0.1:10801" / "socks5://127.0.0.1:1080" */
+function parseProxyServer(input) {
+  const raw = String(input ?? '').trim();
+  if (!raw) return null;
+
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `http://${raw}`;
+
+  let url;
+  try {
+    url = new URL(withScheme);
+  } catch {
+    return null;
+  }
+
+  const scheme = url.protocol.slice(0, -1).toLowerCase();
+  if (!PROXY_SCHEMES.has(scheme)) return null;
+
+  let host = url.hostname;
+  if (!host) return null;
+  if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1);
+
+  const port = url.port ? Number(url.port) : PROXY_DEFAULT_PORTS[scheme];
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+
+  return { scheme, host, port };
+}
+
+function formatProxyServer(server) {
+  const host = server.host.includes(':') ? `[${server.host}]` : server.host;
+  return `${server.scheme}://${host}:${server.port}`;
+}
+
+function buildProxyConfig(server) {
+  return {
+    mode: 'fixed_servers',
+    rules: {
+      singleProxy: { scheme: server.scheme, host: server.host, port: server.port },
+      bypassList: PROXY_BYPASS_LIST
+    }
+  };
+}
+
+async function getProxyServer() {
+  const { proxyServer } = await chrome.storage.local.get({ proxyServer: DEFAULT_PROXY_SERVER });
+  return parseProxyServer(proxyServer) || parseProxyServer(DEFAULT_PROXY_SERVER);
+}
+
 async function readProxyState() {
-  const stored = await chrome.storage.local.get({ proxyMode: 'system' });
+  const stored = await chrome.storage.local.get({ proxyMode: 'proxy' });
+  const server = await getProxyServer();
 
   let settings = null;
   try {
@@ -233,12 +302,20 @@ async function readProxyState() {
     console.warn('[proxy] 读取代理设置失败：', error);
   }
 
-  const rawMode = settings?.value?.mode || stored.proxyMode || 'system';
+  // 旧版本存的是 'system'，迁移后视为「代理」态
+  const rawMode =
+    settings?.value?.mode || (stored.proxyMode === 'direct' ? 'direct' : 'fixed_servers');
+
+  let mode;
+  if (rawMode === 'direct') mode = 'direct';
+  else if (rawMode === 'fixed_servers') mode = 'proxy';
+  else mode = 'other';
 
   return {
-    mode: rawMode === 'direct' ? 'direct' : 'system',
+    mode,
     rawMode,
-    storedMode: stored.proxyMode,
+    server: formatProxyServer(server),
+    bypass: PROXY_BYPASS_LIST,
     levelOfControl: settings?.levelOfControl || 'controllable_by_this_extension'
   };
 }
@@ -246,23 +323,41 @@ async function readProxyState() {
 async function applyProxyMode(mode) {
   if (!PROXY_MODES.has(mode)) throw new Error(`不支持的代理模式：${mode}`);
 
-  await proxySet({ value: { mode }, scope: 'regular' });
+  const config = mode === 'direct' ? { mode: 'direct' } : buildProxyConfig(await getProxyServer());
+
+  await proxySet({ value: config, scope: 'regular' });
   await chrome.storage.local.set({ proxyMode: mode });
   await refreshBadge();
 
   return readProxyState();
 }
 
+/** 更新代理地址；当前处于「代理」态时立即生效 */
+async function setProxyServer(input) {
+  const server = parseProxyServer(input);
+  if (!server) throw new Error('代理地址格式不正确，示例：http://127.0.0.1:10801');
+
+  const text = formatProxyServer(server);
+  await chrome.storage.local.set({ proxyServer: text });
+
+  const { proxyMode } = await chrome.storage.local.get({ proxyMode: 'proxy' });
+  if (proxyMode === 'proxy') {
+    await proxySet({ value: buildProxyConfig(server), scope: 'regular' });
+  }
+
+  await refreshBadge();
+  return readProxyState();
+}
+
 async function refreshBadge() {
   try {
-    const { mode, rawMode } = await readProxyState();
-    const direct = mode === 'direct';
-    const label = rawMode === 'direct' ? '直连' : rawMode === 'system' ? '系统' : '其他';
+    const { mode } = await readProxyState();
+    const label = mode === 'direct' ? '直连' : mode === 'proxy' ? '代理' : '其他';
 
     await chrome.action.setBadgeText({ text: label });
-    await chrome.action.setBadgeBackgroundColor({ color: direct ? '#2e7d32' : '#1565c0' });
+    await chrome.action.setBadgeBackgroundColor({ color: mode === 'direct' ? '#2e7d32' : '#1565c0' });
     await chrome.action.setTitle({
-      title: `工具箱 — 当前代理：${direct ? '直连（不使用代理）' : '跟随系统代理'}`
+      title: `工具箱 — 当前代理：${label}`
     });
   } catch (error) {
     console.warn('[proxy] 更新角标失败：', error);
@@ -283,6 +378,8 @@ async function handleMessage(message) {
       return readProxyState();
     case 'proxy:set':
       return applyProxyMode(message.mode);
+    case 'proxy:server':
+      return setProxyServer(message.server);
     default:
       throw new Error(`未知消息类型：${message?.type}`);
   }
@@ -300,8 +397,23 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
  * 生命周期
  * ========================================================================== */
 
-chrome.runtime.onInstalled.addListener(() => {
-  void refreshBadge();
+chrome.runtime.onInstalled.addListener((details) => {
+  void (async () => {
+    const { proxyMode } = await chrome.storage.local.get({ proxyMode: '' });
+
+    // 首次安装：直接写入 fixed_servers 配置
+    // 升级：旧版本写入的是 system 模式，迁移到带绕过列表的 fixed_servers
+    const shouldApply =
+      details.reason === 'install' || (details.reason === 'update' && proxyMode === 'system');
+
+    if (shouldApply) {
+      await applyProxyMode(proxyMode === 'direct' ? 'direct' : 'proxy').catch((error) =>
+        console.warn('[proxy] 初始化代理设置失败：', error)
+      );
+    }
+
+    await refreshBadge();
+  })();
 });
 
 chrome.runtime.onStartup.addListener(() => {

@@ -4,7 +4,7 @@ Manifest V3 扩展，包含三个功能位：
 
 | 功能 | 状态 | 说明 |
 | --- | --- | --- |
-| 1. 代理切换 | ✅ | 在「系统代理」与「直连」之间一键切换 |
+| 1. 代理切换 | ✅ | 在「走代理（fixed_servers）」与「直连」之间一键切换 |
 | 2. 段落翻译 | ✅ | `Ctrl` + 左键点击段落 → 段落下方显示中文译文，再点一次隐藏 |
 | 3. 鼠标手势 | ⏳ | 预留，暂未实现（弹窗中占位） |
 
@@ -34,12 +34,19 @@ sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 ### 1. 代理切换
 
-弹窗中「系统代理 / 直连」二选一，通过 `chrome.proxy.settings` 的 `regular` 作用域生效：
+弹窗中「走代理 / 直连」二选一，通过 `chrome.proxy.settings` 的 `regular` 作用域生效：
 
-- 系统代理：`{ mode: "system" }`，跟随操作系统 / 系统策略配置的代理。
+- 走代理：`fixed_servers` + `singleProxy` 指向本地代理（默认 `http://127.0.0.1:10801`，可在弹窗里改）。
 - 直连：`{ mode: "direct" }`，所有请求不走代理。
 
-工具栏角标显示当前状态（`系统` / `直连`）。
+为什么不用 `system` 模式：官方规定 `system` 模式**不允许附带其他参数**，因此无法加 `bypassList`。
+改用 `fixed_servers` 后就能为 TokenHub 域名加绕过规则，翻译请求直连、不依赖代理是否运行：
+
+```
+bypassList: ['*.tencentmaas.com', '*.tencentmaas.cn', 'localhost', '127.0.0.1', '[::1]', '<local>']
+```
+
+工具栏角标显示当前状态（`代理` / `直连`）。
 如果代理设置已被其他扩展或系统策略接管（`levelOfControl` 不是本扩展可控），弹窗会提示并禁用按钮。
 
 ### 2. 段落翻译
@@ -80,7 +87,7 @@ Authorization: Bearer <key>
 
 | 权限 | 用途 |
 | --- | --- |
-| `proxy` | 切换系统代理 / 直连 |
+| `proxy` | 切换代理模式（fixed_servers / direct） |
 | `storage` | 保存代理模式与翻译开关 |
 | `host_permissions`（TokenHub 域名） | 后台 Service Worker 调用翻译接口 |
 | `content_scripts` 的 `<all_urls>` | 在所有网页监听 `Ctrl` + 点击 |
@@ -103,6 +110,8 @@ key.example              # 格式示例
 
 ## 已知限制
 
+- 代理地址写在 `chrome.storage.local`（默认 `http://127.0.0.1:10801`），弹窗里可直接修改；支持 `http/https/socks4/socks5/quic`。
+- 若代理需要认证，扩展无法代替你输入账号密码，这类请求会失败（本地代理通常不需要）。
 - Chrome 不允许在 `chrome://`、Chrome 应用商店等特权页面注入内容脚本。
 - 若段落位于跨域 iframe 内，需要该 iframe 允许注入（已开启 `all_frames`）。
 - 部分用 Canvas / 自定义渲染的「文字」不在 DOM 中，无法翻译。
