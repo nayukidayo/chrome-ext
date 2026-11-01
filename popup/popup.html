@@ -18,7 +18,7 @@
       </div>
 
       <div class="segmented" role="radiogroup" aria-label="代理模式">
-        <button type="button" data-mode="proxy" role="radio" aria-checked="false">走代理</button>
+        <button type="button" data-mode="proxy" role="radio" aria-checked="false">代理</button>
         <button type="button" data-mode="direct" role="radio" aria-checked="false">直连</button>
       </div>
 
@@ -48,7 +48,21 @@
       <p class="hint">
         按住 <kbd>Ctrl</kbd> 并点击网页中的段落 → 在段落下方显示中文译文；再次 <kbd>Ctrl</kbd> + 点击可隐藏。
       </p>
-      <p class="hint muted">模型：hy-mt2-lite · 腾讯云 TokenHub</p>
+
+      <div class="field">
+        <span>API Key</span>
+        <input
+          id="api-key"
+          type="password"
+          spellcheck="false"
+          autocomplete="off"
+          aria-label="TokenHub API Key"
+          placeholder="sk-..."
+        />
+        <button type="button" id="api-key-save" class="btn-inline">保存</button>
+      </div>
+
+      <p id="key-hint" class="hint muted">模型：hy-mt2-lite · 腾讯云 TokenHub</p>
     </section>
 
     <section class="card disabled">

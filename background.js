@@ -1,12 +1,12 @@
 /**
  * 后台 Service Worker
  *
- * 1) 代理切换：在「走本地代理(fixed_servers)」与「直连(direct)」之间切换（chrome.proxy）
+ * 1) 代理切换：在「代理(fixed_servers)」与「直连(direct)」之间切换（chrome.proxy）
  *    —— 用 fixed_servers 而非 system，是为了给翻译接口加 bypassList（直连）
  * 2) 段落翻译：调用腾讯云 TokenHub 的 hy-mt2-lite（OpenAI 兼容 /v1/chat/completions）
  *
- * API Key 存放在扩展目录的 key 文件中（纯文本，一行），
- * 只由本 Service Worker 读取，内容脚本始终拿不到密钥。
+ * API Key 由用户在弹窗中填写，保存在 chrome.storage.local，
+ * 只由本 Service Worker 读取使用，内容脚本与网页都拿不到密钥。
  */
 
 'use strict';
@@ -21,8 +21,6 @@ const ENDPOINTS = [
   'https://tokenhub.tencentmaas.com/v1/chat/completions',
   'https://tokenhub.tencentmaas.cn/v1/chat/completions'
 ];
-
-const KEY_FILES = ['key', 'key.txt'];
 
 /**
  * 代理配置
@@ -50,40 +48,44 @@ const CACHE_LIMIT = 400;
 const translationCache = new Map();
 const inflight = new Map();
 
-let apiKeyPromise = null;
-
 /* ============================================================================
  * API Key
  * ========================================================================== */
 
-function parseKeyFile(text) {
-  return (
-    String(text)
-      .replace(/^\uFEFF/, '')
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find((line) => line && !line.startsWith('#') && !line.startsWith('//')) || ''
-  );
+function maskApiKey(key) {
+  const text = String(key || '');
+  if (text.length <= 10) return `${text.slice(0, 2)}…`;
+  return `${text.slice(0, 4)}…${text.slice(-4)}`;
 }
 
-/** 读取扩展目录下的 key 文件（同源 fetch，页面无法访问） */
-function loadApiKey() {
-  if (!apiKeyPromise) {
-    apiKeyPromise = (async () => {
-      for (const file of KEY_FILES) {
-        try {
-          const response = await fetch(chrome.runtime.getURL(file), { cache: 'no-store' });
-          if (!response.ok) continue;
-          const key = parseKeyFile(await response.text());
-          if (key) return key;
-        } catch (error) {
-          console.warn('[HY-MT] 读取', file, '失败：', error);
-        }
-      }
-      return '';
-    })();
+/** 规范化用户输入：去掉 Bearer 前缀与空白 */
+function normalizeApiKey(input) {
+  return String(input ?? '')
+    .trim()
+    .replace(/^Bearer\s+/i, '')
+    .trim();
+}
+
+async function getApiKey() {
+  const { apiKey } = await chrome.storage.local.get({ apiKey: '' });
+  return normalizeApiKey(apiKey);
+}
+
+async function readApiKeyState() {
+  const apiKey = await getApiKey();
+  return { hasApiKey: Boolean(apiKey), apiKeyMasked: apiKey ? maskApiKey(apiKey) : '' };
+}
+
+async function saveApiKey(input) {
+  const apiKey = normalizeApiKey(input);
+
+  if (!apiKey) throw new Error('请输入 API Key');
+  if (apiKey.length < 8 || !/^[\x21-\x7e]+$/.test(apiKey)) {
+    throw new Error('API Key 格式看起来不正确，应为 TokenHub 控制台创建的一串可见字符');
   }
-  return apiKeyPromise;
+
+  await chrome.storage.local.set({ apiKey });
+  return { hasApiKey: true, apiKeyMasked: maskApiKey(apiKey) };
 }
 
 /* ============================================================================
@@ -100,9 +102,9 @@ function extractApiError(raw) {
 }
 
 async function callModel(text, targetLang) {
-  const apiKey = await loadApiKey();
+  const apiKey = await getApiKey();
   if (!apiKey) {
-    throw new Error('未找到 API Key：请在扩展目录的 key 文件中填入 TokenHub 的 API Key，然后重新加载扩展');
+    throw new Error('未填写 API Key：请点击工具栏图标，在「段落翻译」中填写 TokenHub API Key');
   }
 
   const payload = JSON.stringify({
@@ -380,6 +382,10 @@ async function handleMessage(message) {
       return applyProxyMode(message.mode);
     case 'proxy:server':
       return setProxyServer(message.server);
+    case 'apikey:get':
+      return readApiKeyState();
+    case 'apikey:set':
+      return saveApiKey(message.apiKey);
     default:
       throw new Error(`未知消息类型：${message?.type}`);
   }

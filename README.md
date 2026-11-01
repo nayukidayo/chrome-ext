@@ -4,7 +4,7 @@ Manifest V3 扩展，包含三个功能位：
 
 | 功能 | 状态 | 说明 |
 | --- | --- | --- |
-| 1. 代理切换 | ✅ | 在「走代理（fixed_servers）」与「直连」之间一键切换 |
+| 1. 代理切换 | ✅ | 在「代理（fixed_servers）」与「直连」之间一键切换 |
 | 2. 段落翻译 | ✅ | `Ctrl` + 左键点击段落 → 段落下方显示中文译文，再点一次隐藏 |
 | 3. 鼠标手势 | ⏳ | 预留，暂未实现（弹窗中占位） |
 
@@ -19,24 +19,24 @@ Manifest V3 扩展，包含三个功能位：
 ## API Key
 
 翻译使用腾讯云 TokenHub 的 `hy-mt2-lite` 模型。
-把 API Key 写入本目录下的 `key` 文件（纯文本，一行，保存后无需带引号）：
+API Key 在**弹窗 →「段落翻译」→ API Key** 中填写，点「保存」或按回车生效：
 
 ```
 sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-- 修改 `key` 后需要到 `chrome://extensions/` 点击「重新加载」。
-- `key` 文件只由后台 Service Worker 通过 `chrome.runtime.getURL()` 读取，
-  内容脚本与网页都拿不到密钥；**记得不要把它提交到仓库**（`.gitignore` 已忽略）。
-- 备用文件名 `key.txt` 同样支持；以 `#` 或 `//` 开头的行会被忽略。
+- 保存后输入框清空，占位提示显示掩码（如 `已保存 sk-z…THK`），方便确认已生效。
+- 密钥保存在 `chrome.storage.local`，只由后台 Service Worker 读取；
+  内容脚本与网页都拿不到密钥。
+- 不再从扩展目录的 `key` 文件读取；如果旧版本留下过 `key` / `key.txt`，可以直接删除。
 
 ## 功能说明
 
 ### 1. 代理切换
 
-弹窗中「走代理 / 直连」二选一，通过 `chrome.proxy.settings` 的 `regular` 作用域生效：
+弹窗中「代理 / 直连」二选一，通过 `chrome.proxy.settings` 的 `regular` 作用域生效：
 
-- 走代理：`fixed_servers` + `singleProxy` 指向本地代理（默认 `http://127.0.0.1:10801`，可在弹窗里改）。
+- 代理：`fixed_servers` + `singleProxy` 指向本地代理（默认 `http://127.0.0.1:10801`，可在弹窗里改）。
 - 直连：`{ mode: "direct" }`，所有请求不走代理。
 
 为什么不用 `system` 模式：官方规定 `system` 模式**不允许附带其他参数**，因此无法加 `bypassList`。
@@ -88,7 +88,7 @@ Authorization: Bearer <key>
 | 权限 | 用途 |
 | --- | --- |
 | `proxy` | 切换代理模式（fixed_servers / direct） |
-| `storage` | 保存代理模式与翻译开关 |
+| `storage` | 保存代理模式、代理地址、API Key 与翻译开关 |
 | `host_permissions`（TokenHub 域名） | 后台 Service Worker 调用翻译接口 |
 | `content_scripts` 的 `<all_urls>` | 在所有网页监听 `Ctrl` + 点击 |
 
@@ -103,8 +103,6 @@ content/
 popup/
   popup.html / popup.css / popup.js
 icons/                   # 16/32/48/128 图标
-key                      # API Key（本地，勿提交）
-key.example              # 格式示例
 .dev-test/harness.html   # 开发自测页（桩掉 chrome API，直接双击可用）
 ```
 

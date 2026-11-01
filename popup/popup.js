@@ -4,10 +4,14 @@ const modeButtons = Array.from(document.querySelectorAll('[data-mode]'));
 const proxyBadge = document.getElementById('proxy-badge');
 const proxyHint = document.getElementById('proxy-hint');
 const proxyServerInput = document.getElementById('proxy-server');
+const apiKeyInput = document.getElementById('api-key');
+const apiKeySaveBtn = document.getElementById('api-key-save');
+const keyHint = document.getElementById('key-hint');
 const translateToggle = document.getElementById('translate-toggle');
 const versionEl = document.getElementById('version');
 
 const DEFAULT_HINT = '翻译请求已设为直连，代理未启动也能翻译。';
+const KEY_HINT_DEFAULT = '模型：hy-mt2-lite · 腾讯云 TokenHub';
 
 let busy = false;
 let locked = false;
@@ -35,8 +39,8 @@ function renderProxy(proxyState, { syncInput = false } = {}) {
     button.setAttribute('aria-checked', String(active));
   }
 
-  proxyBadge.textContent = mode === 'direct' ? '直连' : mode === 'proxy' ? '走代理' : '其他';
-  proxyBadge.dataset.mode = mode === 'direct' ? 'direct' : 'system';
+  proxyBadge.textContent = mode === 'direct' ? '直连' : mode === 'proxy' ? '代理' : '其他';
+  proxyBadge.dataset.state = mode;
 
   if (server) {
     lastServer = server;
@@ -68,7 +72,7 @@ async function refreshProxy() {
     renderProxy(await send({ type: 'proxy:get' }));
   } catch (error) {
     proxyBadge.textContent = '读取失败';
-    proxyBadge.removeAttribute('data-mode');
+    delete proxyBadge.dataset.state;
     setHint(error.message, true);
   }
 }
@@ -125,6 +129,63 @@ proxyServerInput.addEventListener('keydown', (event) => {
   }
 });
 
+/* 翻译 API Key */
+function setKeyHint(text, warn = false) {
+  keyHint.textContent = text;
+  keyHint.classList.remove('muted');
+  keyHint.classList.toggle('warn', warn);
+}
+
+function renderApiKey(state) {
+  const { hasApiKey, apiKeyMasked } = state;
+
+  apiKeyInput.value = '';
+  apiKeyInput.placeholder = hasApiKey ? `已保存 ${apiKeyMasked}，重新输入可覆盖` : 'sk-...';
+
+  if (hasApiKey) setKeyHint(`已保存 ${apiKeyMasked}`, false);
+  else setKeyHint('尚未填写 API Key，翻译前请先填写。', true);
+}
+
+async function refreshApiKey() {
+  try {
+    renderApiKey(await send({ type: 'apikey:get' }));
+  } catch (error) {
+    setKeyHint(error.message, true);
+  }
+}
+
+async function saveApiKey() {
+  const value = apiKeyInput.value.trim();
+
+  if (!value) {
+    keyHint.textContent = KEY_HINT_DEFAULT;
+    keyHint.classList.add('muted');
+    keyHint.classList.remove('warn');
+    apiKeyInput.focus();
+    return;
+  }
+
+  apiKeySaveBtn.disabled = true;
+  try {
+    renderApiKey(await send({ type: 'apikey:set', apiKey: value }));
+  } catch (error) {
+    setKeyHint(error.message, true);
+  } finally {
+    apiKeySaveBtn.disabled = false;
+  }
+}
+
+apiKeySaveBtn.addEventListener('click', () => {
+  void saveApiKey();
+});
+
+apiKeyInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    void saveApiKey();
+  }
+});
+
 /* 翻译开关 */
 try {
   chrome.storage.sync.get({ translateEnabled: true }, (value) => {
@@ -146,3 +207,4 @@ try {
 
 versionEl.textContent = `v${chrome.runtime?.getManifest?.()?.version ?? 'dev'}`;
 void refreshProxy();
+void refreshApiKey();
