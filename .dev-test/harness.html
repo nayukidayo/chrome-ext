@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>HY-MT content script harness</title>
+    <style>
+      body {
+        font: 16px/1.7 system-ui, sans-serif;
+        max-width: 720px;
+        margin: 40px auto;
+        padding: 0 16px;
+      }
+      .bubble-wrap {
+        display: flex;
+        gap: 12px;
+      }
+      .bubble {
+        display: inline-block;
+        padding: 8px;
+        background: #eee;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Content script test</h1>
+    <p id="p1">
+      The quick brown fox jumps over the lazy dog. This paragraph is used to verify the translation panel
+      injection.
+    </p>
+    <p id="p2">这是一段中文内容，用于验证不会重复翻译。</p>
+    <div id="d1">A div paragraph with some English text that should also be translatable.</div>
+    <div class="bubble-wrap">
+      <div class="bubble" id="bubble">Chat bubble with inline-block display.</div>
+    </div>
+    <ul>
+      <li id="li1">A list item with English text.</li>
+    </ul>
+    <p id="link-p">Visit <a id="lnk" href="https://example.com">example dot com</a> for more.</p>
+
+    <script>
+      window.chrome = {
+        runtime: {
+          lastError: null,
+          getURL: (path) => path,
+          sendMessage: (message) =>
+            new Promise((resolve) =>
+              setTimeout(() => resolve({ ok: true, data: { translation: '[译文] ' + message.text } }), 120)
+            )
+        },
+        storage: {
+          sync: { get: (defaults, cb) => cb(defaults) },
+          onChanged: { addListener: () => {} }
+        }
+      };
+    </script>
+    <script src="../content/translate.js"></script>
+  </body>
+</html>

@@ -1,0 +1,3 @@
+# 把下面这行替换成你在 TokenHub 控制台创建的 API Key（保持单行，不要带引号）
+# 保存为与本示例同目录下的 `key` 文件即可
+sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx

@@ -1,0 +1,11 @@
+/* 译文面板宿主元素（Shadow DOM 内部的样式见 content/translate.js） */
+hymt-panel {
+  all: initial;
+  display: block;
+}
+
+@media print {
+  hymt-panel {
+    display: none !important;
+  }
+}

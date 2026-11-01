@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>工具箱</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <h1>工具箱</h1>
+      <span id="version" class="version"></span>
+    </header>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>网络代理</h2>
+        <span id="proxy-badge" class="pill">读取中…</span>
+      </div>
+
+      <div class="segmented" role="radiogroup" aria-label="代理模式">
+        <button type="button" data-mode="system" role="radio" aria-checked="false">系统代理</button>
+        <button type="button" data-mode="direct" role="radio" aria-checked="false">直连</button>
+      </div>
+
+      <p id="proxy-hint" class="hint">切换后对所有网站生效。</p>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>段落翻译</h2>
+        <label class="switch" title="启用 / 停用段落翻译">
+          <input type="checkbox" id="translate-toggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <p class="hint">
+        按住 <kbd>Ctrl</kbd> 并点击网页中的段落 → 在段落下方显示中文译文；再次 <kbd>Ctrl</kbd> + 点击可隐藏。
+      </p>
+      <p class="hint muted">模型：hy-mt2-lite · 腾讯云 TokenHub</p>
+    </section>
+
+    <section class="card disabled">
+      <div class="card-head">
+        <h2>鼠标手势</h2>
+        <span class="pill">未实现</span>
+      </div>
+      <p class="hint muted">功能占位，后续版本加入。</p>
+    </section>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
