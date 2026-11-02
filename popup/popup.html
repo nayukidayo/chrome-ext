@@ -78,12 +78,22 @@
       </p>
     </section>
 
-    <section class="card disabled">
+    <section class="card">
       <div class="card-head">
         <h2>鼠标手势</h2>
-        <span class="pill">未实现</span>
+        <label class="switch" title="启用 / 停用鼠标手势">
+          <input type="checkbox" id="gesture-toggle" />
+          <span class="slider"></span>
+        </label>
       </div>
-      <p class="hint muted">功能占位，后续版本加入。</p>
+
+      <p class="hint">按住 <kbd>右键</kbd> 在页面中划动，每个方向需划出 30px 以上：</p>
+      <ul class="gesture-list">
+        <li><span class="moves"><kbd>↓</kbd><kbd>→</kbd></span>关闭当前页面</li>
+        <li><span class="moves"><kbd>↑</kbd><kbd>←</kbd></span>打开刚关闭的页面</li>
+        <li><span class="moves"><kbd>↑</kbd><kbd>↓</kbd></span>刷新页面</li>
+        <li><span class="moves"><kbd>↑</kbd></span>整个页面滚动到顶部</li>
+      </ul>
     </section>
 
     <script src="popup.js"></script>

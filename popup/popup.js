@@ -10,6 +10,7 @@ const apiKeyInputs = [
 ];
 const keyHint = document.getElementById('key-hint');
 const translateToggle = document.getElementById('translate-toggle');
+const gestureToggle = document.getElementById('gesture-toggle');
 const versionEl = document.getElementById('version');
 
 const DEFAULT_HINT = '翻译请求已设为直连，代理未启动也能翻译。';
@@ -202,24 +203,29 @@ for (const { region, el } of apiKeyInputs) {
   });
 }
 
-/* 翻译开关 */
-try {
-  chrome.storage.sync.get({ translateEnabled: true }, (value) => {
-    if (chrome.runtime.lastError) return;
-    translateToggle.checked = value.translateEnabled !== false;
-  });
+/* 功能开关（storage.sync，默认开启） */
+function bindToggle(input, key) {
+  try {
+    chrome.storage.sync.get({ [key]: true }, (value) => {
+      if (chrome.runtime.lastError) return;
+      input.checked = value[key] !== false;
+    });
 
-  chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== 'sync' || !changes.translateEnabled) return;
-    translateToggle.checked = changes.translateEnabled.newValue !== false;
-  });
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'sync' || !changes[key]) return;
+      input.checked = changes[key].newValue !== false;
+    });
 
-  translateToggle.addEventListener('change', () => {
-    void chrome.storage.sync.set({ translateEnabled: translateToggle.checked });
-  });
-} catch (error) {
-  console.warn('[popup] 读取翻译开关失败：', error);
+    input.addEventListener('change', () => {
+      void chrome.storage.sync.set({ [key]: input.checked });
+    });
+  } catch (error) {
+    console.warn(`[popup] 读取 ${key} 开关失败：`, error);
+  }
 }
+
+bindToggle(translateToggle, 'translateEnabled');
+bindToggle(gestureToggle, 'gestureEnabled');
 
 versionEl.textContent = `v${chrome.runtime?.getManifest?.()?.version ?? 'dev'}`;
 void refreshProxy();

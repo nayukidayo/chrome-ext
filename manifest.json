@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
-  "name": "工具箱：代理切换 + 段落翻译",
-  "version": "1.4.0",
-  "description": "在系统代理与直连之间快速切换；按住 Ctrl 点击网页段落，即可用 HY-MT2-Lite 翻译成中文，再次点击隐藏译文。",
+  "name": "工具箱：代理切换 + 段落翻译 + 鼠标手势",
+  "version": "1.5.0",
+  "description": "在系统代理与直连之间快速切换；按住 Ctrl 点击网页段落即可翻译；按住右键划动手势可关闭、恢复、刷新页面或回到顶部。",
   "minimum_chrome_version": "156",
-  "permissions": ["proxy", "storage"],
+  "permissions": ["proxy", "storage", "sessions"],
   "host_permissions": [
     "https://tokenhub.tencentmaas.com/*",
     "https://tokenhub.tencentmaas.cn/*",
@@ -31,7 +31,7 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content/translate.js"],
+      "js": ["content/translate.js", "content/gesture.js"],
       "css": ["content/translate.css"],
       "run_at": "document_idle",
       "all_frames": true

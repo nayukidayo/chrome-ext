@@ -4,6 +4,7 @@
  * 1) 代理切换：在「代理(fixed_servers)」与「直连(direct)」之间切换（chrome.proxy）
  *    —— 用 fixed_servers 而非 system，是为了给翻译接口加 bypassList（直连）
  * 2) 段落翻译：调用腾讯云 TokenHub 的 hy-mt2-lite（OpenAI 兼容 /v1/chat/completions）
+ * 3) 鼠标手势：内容脚本识别手势后，由这里执行关闭 / 恢复 / 刷新标签页
  *
  * API Key 由用户在弹窗中填写，保存在 chrome.storage.local，
  * 只由本 Service Worker 读取使用，内容脚本与网页都拿不到密钥。
@@ -474,10 +475,64 @@ async function refreshBadge() {
 }
 
 /* ============================================================================
+ * 鼠标手势
+ * ========================================================================== */
+
+function requireTabId(sender) {
+  const tabId = sender?.tab?.id;
+  if (typeof tabId !== 'number') throw new Error('无法确定当前标签页');
+  return tabId;
+}
+
+/** 关闭手势所在的标签页 */
+async function closeGestureTab(sender) {
+  await chrome.tabs.remove(requireTabId(sender));
+  return { action: 'closeTab' };
+}
+
+/** 刷新手势所在的标签页（手势在 iframe 里也能刷新整个页面） */
+async function reloadGestureTab(sender) {
+  await chrome.tabs.reload(requireTabId(sender));
+  return { action: 'reloadTab' };
+}
+
+/**
+ * 「上」：让顶层框架把整页滚到顶部
+ * 手势可能起自 iframe，那里没有可滚动的整页，必须转给 frameId 0
+ */
+async function scrollGestureTabTop(sender) {
+  const tabId = requireTabId(sender);
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'gesture:scrollTop' }, { frameId: 0 });
+  } catch (error) {
+    console.warn('[gesture] 通知顶层框架滚动失败：', error);
+  }
+  return { action: 'scrollTop' };
+}
+
+/** 恢复最近关闭的页面；最近关闭的是窗口时恢复整个窗口 */
+async function reopenClosedTab() {
+  const sessions = await chrome.sessions.getRecentlyClosed({ maxResults: 1 });
+  const latest = sessions?.[0];
+  if (!latest) throw new Error('没有可恢复的页面');
+
+  if (latest.tab) {
+    await chrome.sessions.restore(latest.tab.sessionId);
+    return { action: 'reopenTab', kind: 'tab' };
+  }
+  if (latest.window) {
+    await chrome.sessions.restore(latest.window.sessionId);
+    return { action: 'reopenTab', kind: 'window' };
+  }
+
+  throw new Error('没有可恢复的页面');
+}
+
+/* ============================================================================
  * 消息分发
  * ========================================================================== */
 
-async function handleMessage(message) {
+async function handleMessage(message, sender) {
   switch (message?.type) {
     case 'translate': {
       const translation = await translateText(message.text, message.targetLang);
@@ -493,13 +548,21 @@ async function handleMessage(message) {
       return readApiKeyState();
     case 'apikey:set':
       return saveApiKey(message.region, message.apiKey);
+    case 'gesture:closeTab':
+      return closeGestureTab(sender);
+    case 'gesture:reloadTab':
+      return reloadGestureTab(sender);
+    case 'gesture:scrollTop':
+      return scrollGestureTabTop(sender);
+    case 'gesture:reopenTab':
+      return reopenClosedTab();
     default:
       throw new Error(`未知消息类型：${message?.type}`);
   }
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  handleMessage(message).then(
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  handleMessage(message, sender).then(
     (data) => sendResponse({ ok: true, data }),
     (error) => sendResponse({ ok: false, error: error?.message || String(error) })
   );

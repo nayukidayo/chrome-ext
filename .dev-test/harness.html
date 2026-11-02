@@ -137,10 +137,14 @@
         runtime: {
           lastError: null,
           getURL: (path) => path,
-          sendMessage: (message) =>
-            new Promise((resolve) =>
+          onMessage: { addListener: () => {} },
+          sendMessage: (message) => {
+            window.__messages = window.__messages || [];
+            window.__messages.push(message);
+            return new Promise((resolve) =>
               setTimeout(() => resolve({ ok: true, data: { translation: '[译文] ' + message.text } }), 120)
-            )
+            );
+          }
         },
         storage: {
           sync: { get: (defaults, cb) => cb(defaults) },
@@ -149,5 +153,6 @@
       };
     </script>
     <script src="../content/translate.js"></script>
+    <script src="../content/gesture.js"></script>
   </body>
 </html>
