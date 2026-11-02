@@ -54,6 +54,10 @@ bypassList: ['*.tencentmaas.com', '*.tencentmaas.cn', 'localhost', '127.0.0.1', 
 - **触发**：按住 `Ctrl` 后左键点击网页任意段落。
 - **定位**：用 `caretRangeFromPoint` 取鼠标下的文字节点，向上找最近的块级容器（`p`、`li`、`td`、`div` 等）作为「段落」。
 - **展示**：译文卡片插入在该段落末尾（原文下方），使用自定义元素 + Shadow DOM + 构造式样式表，页面 CSS / CSP 基本不会干扰。
+- **自动浮层**：若段落自身或祖先会裁剪内容（固定高度 + `overflow: hidden`、`-webkit-line-clamp`、`contain: paint`、`clip-path` 等），
+  面板会被切掉。此时改用 Popover API 把面板提升到 **top layer**，彻底脱离祖先裁剪，并自动贴住段落定位：
+  下方空间不够时翻到上方，超出视口时向内收，页面滚动 / 窗口缩放时跟随重定位，`Esc` 关闭；长译文内部可滚动。
+- **自动滚动**：若段落处于 `overflow: auto/scroll` 容器内，面板落到可视区之外时会微调该容器的 `scrollTop`（不影响整页滚动）。
 - **隐藏**：再次 `Ctrl` + 点击同一段落即隐藏；译文已缓存，第三次点击直接显示而不重复请求。
 - **跳过**：链接、按钮、输入框、可编辑区域、`pre/code` 等不拦截，保留浏览器原生 `Ctrl+点击` 行为。
 
@@ -104,10 +108,13 @@ popup/
   popup.html / popup.css / popup.js
 icons/                   # 16/32/48/128 图标
 .dev-test/harness.html   # 开发自测页（桩掉 chrome API，直接双击可用）
+.dev-test/layout-test.js # 布局逻辑回归测试：node .dev-test/layout-test.js
 ```
 
 ## 已知限制
 
+- 最低支持 Chrome 156（`minimum_chrome_version`），依赖 Popover API 与构造式样式表。
+- 一旦某个段落切换到浮层模式，本次显示期间会一直保持浮层（避免内嵌/浮层来回跳动），再次点击隐藏后重新判定。
 - 代理地址写在 `chrome.storage.local`（默认 `http://127.0.0.1:10801`），弹窗里可直接修改；支持 `http/https/socks4/socks5/quic`。
 - 若代理需要认证，扩展无法代替你输入账号密码，这类请求会失败（本地代理通常不需要）。
 - Chrome 不允许在 `chrome://`、Chrome 应用商店等特权页面注入内容脚本。
