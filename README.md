@@ -6,7 +6,7 @@ Manifest V3 扩展，包含三个功能位：
 | --- | --- | --- |
 | 1. 代理切换 | ✅ | 在「代理（fixed_servers）」与「直连」之间一键切换 |
 | 2. 段落翻译 | ✅ | `Ctrl` + 左键点击段落 → 段落下方显示中文译文，再点一次隐藏 |
-| 3. 鼠标手势 | ✅ | 按住右键划动：下右关闭页面、上左恢复页面、上下刷新、上回到顶部 |
+| 3. 鼠标手势 | ✅ | 按住右键划动：下右关闭页面、上左恢复页面、上下刷新、左后退、右前进、上回到顶部 |
 
 ## 安装
 
@@ -106,6 +106,8 @@ Authorization: Bearer <该地域的 key>
 | 下右 | 关闭当前页面 | 后台 `chrome.tabs.remove` |
 | 上左 | 打开刚关闭的页面 | 后台 `chrome.sessions.restore` |
 | 上下 | 刷新页面 | 后台 `chrome.tabs.reload` |
+| 左 | 后退（上一页） | 后台 `chrome.tabs.goBack` |
+| 右 | 前进（下一页） | 后台 `chrome.tabs.goForward` |
 | 上 | 整个页面滚动到顶部 | 顶层框架内容脚本 `scrollTo({ top: 0, behavior: 'smooth' })` |
 
 识别细节：

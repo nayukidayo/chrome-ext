@@ -4,7 +4,7 @@
  * 1) 代理切换：在「代理(fixed_servers)」与「直连(direct)」之间切换（chrome.proxy）
  *    —— 用 fixed_servers 而非 system，是为了给翻译接口加 bypassList（直连）
  * 2) 段落翻译：调用腾讯云 TokenHub 的 hy-mt2-lite（OpenAI 兼容 /v1/chat/completions）
- * 3) 鼠标手势：内容脚本识别手势后，由这里执行关闭 / 恢复 / 刷新标签页
+ * 3) 鼠标手势：内容脚本识别手势后，由这里执行关闭 / 恢复 / 刷新 / 前进后退标签页
  *
  * API Key 由用户在弹窗中填写，保存在 chrome.storage.local，
  * 只由本 Service Worker 读取使用，内容脚本与网页都拿不到密钥。
@@ -496,6 +496,28 @@ async function reloadGestureTab(sender) {
   return { action: 'reloadTab' };
 }
 
+/** 「左」：后退到上一页；没有历史记录时什么都不做 */
+async function goBackGestureTab(sender) {
+  const tabId = requireTabId(sender);
+  try {
+    await chrome.tabs.goBack(tabId);
+  } catch {
+    // 没有可后退的页面（Cannot find a next page in history）：静默忽略
+  }
+  return { action: 'goBack' };
+}
+
+/** 「右」：前进到下一页；没有历史记录时什么都不做 */
+async function goForwardGestureTab(sender) {
+  const tabId = requireTabId(sender);
+  try {
+    await chrome.tabs.goForward(tabId);
+  } catch {
+    // 没有可前进的页面（Cannot find a next page in history）：静默忽略
+  }
+  return { action: 'goForward' };
+}
+
 /**
  * 「上」：让顶层框架把整页滚到顶部
  * 手势可能起自 iframe，那里没有可滚动的整页，必须转给 frameId 0
@@ -552,6 +574,10 @@ async function handleMessage(message, sender) {
       return closeGestureTab(sender);
     case 'gesture:reloadTab':
       return reloadGestureTab(sender);
+    case 'gesture:goBack':
+      return goBackGestureTab(sender);
+    case 'gesture:goForward':
+      return goForwardGestureTab(sender);
     case 'gesture:scrollTop':
       return scrollGestureTabTop(sender);
     case 'gesture:reopenTab':
