@@ -16,11 +16,33 @@ const DEFAULT_TARGET_LANG = '中文';
 const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_SOURCE_CHARS = 6000;
 
-/** 默认接入地址（广州）+ 官方备用地址 */
-const ENDPOINTS = [
-  'https://tokenhub.tencentmaas.com/v1/chat/completions',
-  'https://tokenhub.tencentmaas.cn/v1/chat/completions'
+/**
+ * 接入地域
+ *
+ * 广州 / 新加坡是两套互相独立的服务，密钥也不通用（不支持跨地域调用）。
+ * 每个地域都有自己的默认地址与官方备用地址。
+ * 文档：https://cloud.tencent.com/document/product/1823/130078
+ */
+const REGIONS = [
+  {
+    id: 'guangzhou',
+    label: '广州',
+    endpoints: [
+      'https://tokenhub.tencentmaas.com/v1/chat/completions',
+      'https://tokenhub.tencentmaas.cn/v1/chat/completions'
+    ]
+  },
+  {
+    id: 'singapore',
+    label: '新加坡',
+    endpoints: [
+      'https://tokenhub-intl.tencentmaas.com/v1/chat/completions',
+      'https://tokenhub-intl.tencentmaas.cn/v1/chat/completions'
+    ]
+  }
 ];
+
+const REGION_BY_ID = new Map(REGIONS.map((region) => [region.id, region]));
 
 /**
  * 代理配置
@@ -33,7 +55,7 @@ const PROXY_MODES = new Set(['proxy', 'direct']);
 const PROXY_SCHEMES = new Set(['http', 'https', 'socks4', 'socks5', 'quic']);
 const PROXY_DEFAULT_PORTS = { http: 80, https: 443, socks4: 1080, socks5: 1080, quic: 443 };
 
-/** 不走代理的主机：TokenHub 直连，其余走本地代理 */
+/** 不走代理的主机：TokenHub（含新加坡 intl 站点）直连，其余走本地代理 */
 const PROXY_BYPASS_LIST = [
   '*.tencentmaas.com',
   '*.tencentmaas.cn',
@@ -49,7 +71,7 @@ const translationCache = new Map();
 const inflight = new Map();
 
 /* ============================================================================
- * API Key
+ * API Key（广州 / 新加坡 各一把）
  * ========================================================================== */
 
 function maskApiKey(key) {
@@ -66,26 +88,55 @@ function normalizeApiKey(input) {
     .trim();
 }
 
-async function getApiKey() {
-  const { apiKey } = await chrome.storage.local.get({ apiKey: '' });
-  return normalizeApiKey(apiKey);
+const EMPTY_API_KEYS = { guangzhou: '', singapore: '' };
+
+/** 读取两把 Key；旧版本只存了单把 apiKey，自动迁移成广州地域的 Key */
+async function getApiKeys() {
+  const stored = await chrome.storage.local.get({ apiKeys: null, apiKey: '' });
+  const storedKeys = stored.apiKeys && typeof stored.apiKeys === 'object' ? stored.apiKeys : null;
+
+  if (!storedKeys) {
+    const migrated = { ...EMPTY_API_KEYS, guangzhou: normalizeApiKey(stored.apiKey) };
+    await chrome.storage.local.set({ apiKeys: migrated });
+    if (stored.apiKey) await chrome.storage.local.remove('apiKey');
+    return migrated;
+  }
+
+  const keys = { ...EMPTY_API_KEYS };
+  for (const region of REGIONS) keys[region.id] = normalizeApiKey(storedKeys[region.id]);
+  return keys;
 }
 
 async function readApiKeyState() {
-  const apiKey = await getApiKey();
-  return { hasApiKey: Boolean(apiKey), apiKeyMasked: apiKey ? maskApiKey(apiKey) : '' };
+  const keys = await getApiKeys();
+  const regions = REGIONS.map((region) => {
+    const apiKey = keys[region.id];
+    return {
+      id: region.id,
+      label: region.label,
+      hasApiKey: Boolean(apiKey),
+      apiKeyMasked: apiKey ? maskApiKey(apiKey) : ''
+    };
+  });
+
+  return { hasApiKey: regions.some((region) => region.hasApiKey), regions };
 }
 
-async function saveApiKey(input) {
-  const apiKey = normalizeApiKey(input);
+async function saveApiKey(regionId, input) {
+  const region = REGION_BY_ID.get(regionId);
+  if (!region) throw new Error(`未知地域：${regionId}`);
 
+  const apiKey = normalizeApiKey(input);
   if (!apiKey) throw new Error('请输入 API Key');
   if (apiKey.length < 8 || !/^[\x21-\x7e]+$/.test(apiKey)) {
     throw new Error('API Key 格式看起来不正确，应为 TokenHub 控制台创建的一串可见字符');
   }
 
-  await chrome.storage.local.set({ apiKey });
-  return { hasApiKey: true, apiKeyMasked: maskApiKey(apiKey) };
+  const keys = await getApiKeys();
+  keys[region.id] = apiKey;
+  await chrome.storage.local.set({ apiKeys: keys });
+
+  return readApiKeyState();
 }
 
 /* ============================================================================
@@ -101,10 +152,85 @@ function extractApiError(raw) {
   }
 }
 
+/**
+ * 发一次请求。
+ * 成功 → { ok: true, translation }
+ * 失败 → { ok: false, error, retryEndpoint }：retryEndpoint 表示换本地域的备用域名
+ *        还有意义（网络错误 / 5xx / 返回体损坏）；4xx 属于请求或密钥本身的问题，
+ *        换域名没用，但换地域（另一把 Key）可能有用。
+ * 审核不通过 → 直接抛出（换哪个地域都一样）。
+ */
+async function requestTranslation(endpoint, apiKey, payload) {
+  let response;
+  try {
+    response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`
+      },
+      body: payload,
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+    });
+  } catch (error) {
+    if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {
+      return {
+        ok: false,
+        timeout: true,
+        error: new Error(`请求超时（${REQUEST_TIMEOUT_MS / 1000} 秒）`)
+      };
+    }
+    return {
+      ok: false,
+      retryEndpoint: true,
+      error: new Error(`无法连接 TokenHub：${error?.message || error}`)
+    };
+  }
+
+  const raw = await response.text();
+
+  if (!response.ok) {
+    const message = extractApiError(raw) || raw.slice(0, 300);
+    return {
+      ok: false,
+      retryEndpoint: response.status >= 500,
+      error: new Error(`接口错误 ${response.status}：${message}`)
+    };
+  }
+
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return { ok: false, retryEndpoint: true, error: new Error('接口返回了无法解析的内容') };
+  }
+
+  const choice = data?.choices?.[0];
+  const content = choice?.message?.content;
+  if (typeof content === 'string' && content.trim()) {
+    return { ok: true, translation: content.trim() };
+  }
+
+  if (choice?.finish_reason === 'sensitive') throw new Error('内容未通过审核，无法翻译');
+  return { ok: false, retryEndpoint: false, error: new Error('模型没有返回译文') };
+}
+
+/** 有 Key 的地域随机打乱顺序：先随机挑一个，失败再切另一个 */
+function shuffleRegions(regions) {
+  const order = regions.slice();
+  for (let i = order.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+  return order;
+}
+
 async function callModel(text, targetLang) {
-  const apiKey = await getApiKey();
-  if (!apiKey) {
-    throw new Error('未填写 API Key：请点击工具栏图标，在「段落翻译」中填写 TokenHub API Key');
+  const keys = await getApiKeys();
+  const usable = REGIONS.filter((region) => Boolean(keys[region.id]));
+
+  if (usable.length === 0) {
+    throw new Error('未填写 API Key：请点击工具栏图标，在「段落翻译」中填写广州或新加坡的 TokenHub API Key');
   }
 
   const payload = JSON.stringify({
@@ -119,59 +245,40 @@ async function callModel(text, targetLang) {
     stream: false
   });
 
-  let lastError = null;
+  const failures = new Map();
 
-  for (const endpoint of ENDPOINTS) {
-    let response;
-    try {
-      response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`
-        },
-        body: payload,
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
-      });
-    } catch (error) {
-      if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {
-        throw new Error(`请求超时（${REQUEST_TIMEOUT_MS / 1000} 秒），请稍后重试`);
-      }
-      // 网络层错误 → 尝试备用域名
-      lastError = new Error(`无法连接 TokenHub：${error?.message || error}`);
-      continue;
-    }
-
-    const raw = await response.text();
-
-    if (!response.ok) {
-      const message = extractApiError(raw) || raw.slice(0, 300);
-      const error = new Error(`接口错误 ${response.status}：${message}`);
-      // 5xx 可以换域名重试，4xx 属于请求本身的问题
-      if (response.status < 500) throw error;
-      lastError = error;
-      continue;
-    }
-
-    let data;
-    try {
-      data = JSON.parse(raw);
-    } catch {
-      lastError = new Error('接口返回了无法解析的内容');
-      continue;
-    }
-
-    const choice = data?.choices?.[0];
-    const content = choice?.message?.content;
-    if (typeof content === 'string' && content.trim()) {
-      return content.trim();
-    }
-
-    if (choice?.finish_reason === 'sensitive') throw new Error('内容未通过审核，无法翻译');
-    lastError = new Error('模型没有返回译文');
+  // 尝试顺序：
+  // 第一轮 各写一行的地域默认地址 —— 先随机挑一个，失败立刻切另一个
+  // 第二轮 各写一行的备用地址 —— 前面全失败时的最后手段
+  const order = shuffleRegions(usable);
+  const attempts = [];
+  for (const region of order) attempts.push({ region, endpoint: region.endpoints[0] });
+  for (const region of order) {
+    for (const endpoint of region.endpoints.slice(1)) attempts.push({ region, endpoint });
   }
 
-  throw lastError || new Error('翻译失败');
+  /** 该地域已确定失败且换域名也无意义（超时 / 4xx 等），不再重试它的备用地址 */
+  const deadRegions = new Set();
+
+  for (const { region, endpoint } of attempts) {
+    if (deadRegions.has(region.id)) continue;
+
+    const result = await requestTranslation(endpoint, keys[region.id], payload);
+    if (result.ok) return result.translation;
+
+    if (!failures.has(region.id)) failures.set(region.id, result.error);
+    // 超时不再纠缠该地域；4xx 属于请求或密钥本身的问题，换域名同样无效
+    if (result.timeout || !result.retryEndpoint) deadRegions.add(region.id);
+  }
+
+  const errors = usable.filter((region) => failures.has(region.id));
+  if (errors.length === 1) throw failures.get(errors[0].id);
+
+  throw new Error(
+    `翻译失败（${errors
+      .map((region) => `${region.label}：${failures.get(region.id).message}`)
+      .join('；')}）`
+  );
 }
 
 function cacheGet(key) {
@@ -385,7 +492,7 @@ async function handleMessage(message) {
     case 'apikey:get':
       return readApiKeyState();
     case 'apikey:set':
-      return saveApiKey(message.apiKey);
+      return saveApiKey(message.region, message.apiKey);
     default:
       throw new Error(`未知消息类型：${message?.type}`);
   }

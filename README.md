@@ -18,17 +18,27 @@ Manifest V3 扩展，包含三个功能位：
 
 ## API Key
 
-翻译使用腾讯云 TokenHub 的 `hy-mt2-lite` 模型。
-API Key 在**弹窗 →「段落翻译」→ API Key** 中填写，回车或失焦即保存：
+翻译使用腾讯云 TokenHub 的 `hy-mt2-lite` 模型。TokenHub 按地域分成两个相互独立的站点，
+API Key **不互通**（只能用对应地域的 Key 调用对应地域的地址）：
+
+| 地域 | 默认地址 | 备用地址 |
+| --- | --- | --- |
+| 广州 | `https://tokenhub.tencentmaas.com` | `https://tokenhub.tencentmaas.cn` |
+| 新加坡 | `https://tokenhub-intl.tencentmaas.com` | `https://tokenhub-intl.tencentmaas.cn` |
+
+API Key 在**弹窗 →「段落翻译」→ 广州 / 新加坡** 两个输入框中分别填写，回车或失焦即保存：
 
 ```
-sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+广州     sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+新加坡   sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
+- 至少填一个；只填一个时不会随机、也不会切换，失败就直接报错。
 - 保存后输入框清空，占位符变为密钥掩码（如 `sk-z…hTHK`），方便确认已生效。
 - 密钥保存在 `chrome.storage.local`，只由后台 Service Worker 读取；
   内容脚本与网页都拿不到密钥。
 - 不再从扩展目录的 `key` 文件读取；如果旧版本留下过 `key` / `key.txt`，可以直接删除。
+- 旧版本只存了一把 Key（`apiKey`），升级后会自动迁移成广州地域的 Key。
 
 ## 功能说明
 
@@ -64,8 +74,9 @@ bypassList: ['*.tencentmaas.com', '*.tencentmaas.cn', 'localhost', '127.0.0.1', 
 请求由后台 Service Worker 发出（内容脚本不直接联网）：
 
 ```
-POST https://tokenhub.tencentmaas.com/v1/chat/completions
-Authorization: Bearer <key>
+POST https://tokenhub.tencentmaas.com/v1/chat/completions        # 广州
+POST https://tokenhub-intl.tencentmaas.com/v1/chat/completions   # 新加坡
+Authorization: Bearer <该地域的 key>
 {
   "model": "hy-mt2-lite",
   "messages": [{ "role": "user",
@@ -76,7 +87,11 @@ Authorization: Bearer <key>
 
 细节：
 
-- 主域名失败（网络错误 / 5xx）时自动尝试备用域名 `tokenhub.tencentmaas.cn`。
+- **随机选地域**：每次请求在有 Key 的地域里随机挑一个作为首选（保证两把 Key 都能分摊流量）。
+- **失败即切换**：首选地域失败（网络错误 / 4xx / 5xx / 超时）后立刻换另一个地域重试；
+  两边都失败时才报错，报错信息会分别列出各地域的原因。
+- **备用域名轮到最后**：两个地域的默认地址都失败后，才会依次尝试各自的备用域名。
+- 超时的地域不再纠缠其备用域名；内容审核不通过则直接失败（换地域结果相同）。
 - 同一段落在后台有内存缓存 + 并发去重，最多 400 条。
 - 单次最多翻译 2000 字符，超出会截断并在卡片上标注。
 - 纯中文段落不会调用接口，只显示提示。
@@ -92,8 +107,8 @@ Authorization: Bearer <key>
 | 权限 | 用途 |
 | --- | --- |
 | `proxy` | 切换代理模式（fixed_servers / direct） |
-| `storage` | 保存代理模式、代理地址、API Key 与翻译开关 |
-| `host_permissions`（TokenHub 域名） | 后台 Service Worker 调用翻译接口 |
+| `storage` | 保存代理模式、代理地址、两把 API Key（广州 / 新加坡）与翻译开关 |
+| `host_permissions`（TokenHub 广州 / 新加坡域名） | 后台 Service Worker 调用翻译接口 |
 | `content_scripts` 的 `<all_urls>` | 在所有网页监听 `Ctrl` + 点击 |
 
 ## 目录结构

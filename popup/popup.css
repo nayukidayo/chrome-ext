@@ -142,6 +142,11 @@ h2 {
   flex: 0 0 auto;
 }
 
+/* 地域标签对齐：广州 / 新加坡 两行输入框左边缘一致 */
+.field.region span {
+  flex: 0 0 3.4em;
+}
+
 .field input {
   flex: 1 1 auto;
   min-width: 0;

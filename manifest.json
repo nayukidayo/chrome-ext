@@ -1,13 +1,15 @@
 {
   "manifest_version": 3,
   "name": "工具箱：代理切换 + 段落翻译",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "在系统代理与直连之间快速切换；按住 Ctrl 点击网页段落，即可用 HY-MT2-Lite 翻译成中文，再次点击隐藏译文。",
   "minimum_chrome_version": "156",
   "permissions": ["proxy", "storage"],
   "host_permissions": [
     "https://tokenhub.tencentmaas.com/*",
-    "https://tokenhub.tencentmaas.cn/*"
+    "https://tokenhub.tencentmaas.cn/*",
+    "https://tokenhub-intl.tencentmaas.com/*",
+    "https://tokenhub-intl.tencentmaas.cn/*"
   ],
   "icons": {
     "16": "icons/icon16.png",

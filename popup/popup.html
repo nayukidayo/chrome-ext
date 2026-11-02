@@ -49,19 +49,33 @@
         按住 <kbd>Ctrl</kbd> 并点击网页中的段落 → 在段落下方显示中文译文；再次 <kbd>Ctrl</kbd> + 点击可隐藏。
       </p>
 
-      <div class="field">
-        <span>API Key</span>
+      <div class="field region">
+        <span>广州</span>
         <input
-          id="api-key"
+          id="api-key-guangzhou"
           type="password"
           spellcheck="false"
           autocomplete="off"
-          aria-label="TokenHub API Key"
+          aria-label="广州地域 TokenHub API Key"
           placeholder="sk-..."
         />
       </div>
 
-      <p id="key-hint" class="hint muted">模型：hy-mt2-lite · 腾讯云 TokenHub</p>
+      <div class="field region">
+        <span>新加坡</span>
+        <input
+          id="api-key-singapore"
+          type="password"
+          spellcheck="false"
+          autocomplete="off"
+          aria-label="新加坡地域 TokenHub API Key"
+          placeholder="sk-..."
+        />
+      </div>
+
+      <p id="key-hint" class="hint muted">
+        模型：hy-mt2-lite · 随机选一个地域，失败时自动切另一个
+      </p>
     </section>
 
     <section class="card disabled">

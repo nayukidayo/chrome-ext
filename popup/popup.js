@@ -4,13 +4,18 @@ const modeButtons = Array.from(document.querySelectorAll('[data-mode]'));
 const proxyBadge = document.getElementById('proxy-badge');
 const proxyHint = document.getElementById('proxy-hint');
 const proxyServerInput = document.getElementById('proxy-server');
-const apiKeyInput = document.getElementById('api-key');
+const apiKeyInputs = [
+  { region: 'guangzhou', el: document.getElementById('api-key-guangzhou') },
+  { region: 'singapore', el: document.getElementById('api-key-singapore') }
+];
 const keyHint = document.getElementById('key-hint');
 const translateToggle = document.getElementById('translate-toggle');
 const versionEl = document.getElementById('version');
 
 const DEFAULT_HINT = '翻译请求已设为直连，代理未启动也能翻译。';
-const KEY_HINT_DEFAULT = '模型：hy-mt2-lite · 腾讯云 TokenHub';
+const KEY_HINT_DEFAULT = '模型：hy-mt2-lite · 随机选一个地域，失败时自动切另一个';
+const KEY_HINT_EMPTY = '至少填写一个地域的 API Key，否则无法翻译。';
+const KEY_HINT_PARTIAL = '只填了一个地域：另一个地域留空则不参与随机与回退。';
 
 let busy = false;
 let locked = false;
@@ -136,18 +141,26 @@ function setKeyHint(text, warn = false) {
 }
 
 function renderApiKey(state) {
-  const { hasApiKey, apiKeyMasked } = state;
+  const regions = Array.isArray(state?.regions) ? state.regions : [];
+  const byId = new Map(regions.map((region) => [region.id, region]));
 
-  apiKeyInput.value = '';
-  // 已保存时占位符直接显示密钥掩码
-  apiKeyInput.placeholder = hasApiKey ? apiKeyMasked : 'sk-...';
+  for (const { region, el } of apiKeyInputs) {
+    const info = byId.get(region);
+    el.value = '';
+    // 已保存时占位符直接显示密钥掩码
+    el.placeholder = info?.hasApiKey ? info.apiKeyMasked : 'sk-...';
+  }
 
-  if (hasApiKey) {
+  const filled = regions.filter((region) => region.hasApiKey).length;
+  if (filled === 0) {
+    setKeyHint(KEY_HINT_EMPTY, true);
+  } else if (filled < regions.length) {
+    setKeyHint(KEY_HINT_PARTIAL);
+    keyHint.classList.add('muted');
+  } else {
     keyHint.textContent = KEY_HINT_DEFAULT;
     keyHint.classList.add('muted');
     keyHint.classList.remove('warn');
-  } else {
-    setKeyHint('尚未填写 API Key，翻译前请先填写。', true);
   }
 }
 
@@ -159,8 +172,8 @@ async function refreshApiKey() {
   }
 }
 
-async function saveApiKey() {
-  const value = apiKeyInput.value.trim();
+async function saveApiKey(region, input) {
+  const value = input.value.trim();
 
   if (!value) {
     // 没输入内容：恢复成已保存状态的提示，不覆盖原有密钥
@@ -169,23 +182,25 @@ async function saveApiKey() {
   }
 
   try {
-    renderApiKey(await send({ type: 'apikey:set', apiKey: value }));
+    renderApiKey(await send({ type: 'apikey:set', region, apiKey: value }));
   } catch (error) {
     // 失败时保留输入内容，方便修正
     setKeyHint(error.message, true);
   }
 }
 
-apiKeyInput.addEventListener('change', () => {
-  void saveApiKey();
-});
+for (const { region, el } of apiKeyInputs) {
+  el.addEventListener('change', () => {
+    void saveApiKey(region, el);
+  });
 
-apiKeyInput.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter') {
-    event.preventDefault();
-    apiKeyInput.blur(); // 交给 change 事件保存
-  }
-});
+  el.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      el.blur(); // 交给 change 事件保存
+    }
+  });
+}
 
 /* 翻译开关 */
 try {
