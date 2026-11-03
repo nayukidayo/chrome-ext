@@ -2,20 +2,22 @@
  * 鼠标手势内容脚本
  *
  * 按住鼠标右键在页面中划动，根据轨迹方向执行动作：
+ *   左右 → 翻译手势起点处的段落
  *   下右 → 关闭当前页面
  *   上左 → 打开刚关闭的页面
  *   上下 → 刷新页面
  *   左   → 后退（上一页）
  *   右   → 前进（下一页）
  *   上   → 整个页面滚动到顶部（不处理页面内部的滚动容器）
- *   下   → 翻译手势起点处的段落
+ *   下   → 整个页面滚动到底部（不处理页面内部的滚动容器）
  *
  * 实现要点：
  * - Pointer Events + 指针捕获：右键拖动期间事件不会因为移出元素而中断
  * - 轨迹先按 Ramer–Douglas–Peucker 简化，再映射成 U/D/L/R 方向序列，手抖不会误判
  * - 只按「每个方向段」的长度判定：每段都要长于 MIN_DIRECTION_LENGTH（30px），
  *   如「下右」要求向下、向右各超过 30px；不看总轨迹长度
- * - 只要按住右键滑动过，就拦掉网页右键菜单（不要求匹配到手势）
+ * - 拖动距离达到 DRAW_START_DISTANCE（轨迹出现）才拦掉网页右键菜单（不要求匹配到手势）；
+ *   更小的位移视为按下时的手抖，按普通右键点击处理，照常弹出菜单
  * - 轨迹是单色实线，绘制在 Shadow DOM 里的全屏 SVG 上（矢量，无需处理 DPR），
  *   使用构造式样式表，避免被页面样式 / CSP 干扰
  */
@@ -36,7 +38,10 @@
   const SAMPLE_DISTANCE = 2;
   /** RDP 轨迹简化容差：消除手抖与轻微弧度 */
   const SIMPLIFY_TOLERANCE = 12;
-  /** 累计移动超过该距离才开始显示轨迹 */
+  /**
+   * 累计移动超过该距离才开始显示轨迹
+   * 也是「右键是否还算普通点击」的阀值：轨迹未出现就松手，照常弹出右键菜单
+   */
   const DRAW_START_DISTANCE = 10;
   /** 轨迹点上限，防止长距离拖动占用过多内存 */
   const MAX_POINTS = 4000;
@@ -53,8 +58,9 @@
     ['UD', 'reloadTab'], // 上下：刷新
     ['L', 'goBack'], // 左：后退
     ['R', 'goForward'], // 右：前进
-    ['U', 'scrollTop'], // 上：回到顶部
-    ['D', 'translate'] // 下：翻译手势起点处的段落
+    ['LR', 'translate'], // 左右：翻译手势起点处的段落
+    ['U', 'scrollTop'], // 上：整个页面滚动到顶部
+    ['D', 'scrollBottom'] // 下：整个页面滚动到底部
   ]);
 
   const state = {
@@ -296,12 +302,13 @@
     }
   }
 
-  /** 「上」只滚动整页，不处理页面内部的滚动容器 */
-  function scrollPageToTop() {
+  /** 「上」/「下」只滚动整页，不处理页面内部的滚动容器 */
+  function scrollPageTo(edge) {
     const scrolling = document.scrollingElement || document.documentElement;
     if (!scrolling) return;
 
-    scrolling.scrollTo({ top: 0, behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
+    const top = edge === 'bottom' ? scrolling.scrollHeight : 0;
+    scrolling.scrollTo({ top, behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
   }
 
   async function sendAction(action) {
@@ -321,17 +328,17 @@
       return;
     }
 
-    if (action === 'scrollTop') {
+    if (action === 'scrollTop' || action === 'scrollBottom') {
       // 手势可能起自 iframe（例如资讯站内嵌的「大家在看」板块）：
       // 子框架滚不到整页，交给后台转发给顶层框架执行
-      if (window.top === window) scrollPageToTop();
-      else void sendAction('scrollTop');
+      if (window.top === window) scrollPageTo(action === 'scrollTop' ? 'top' : 'bottom');
+      else void sendAction(action);
       return;
     }
     void sendAction(action);
   }
 
-  /** 手势「下」：翻译轨迹起点处的段落，具体定位与展示由 content/translate.js 负责 */
+  /** 手势「左右」：翻译轨迹起点处的段落，具体定位与展示由 content/translate.js 负责 */
   function translateAtPoint(point) {
     if (!point) return;
 
@@ -344,10 +351,11 @@
     api.translateAtPoint(point.x, point.y);
   }
 
-  /* 后台转发来的动作（目前只有顶层框架的「上」） */
+  /* 后台转发来的动作（顶层框架的「上」/「下」） */
   try {
     chrome.runtime.onMessage.addListener((message) => {
-      if (message?.type === 'gesture:scrollTop') scrollPageToTop();
+      if (message?.type === 'gesture:scrollTop') scrollPageTo('top');
+      else if (message?.type === 'gesture:scrollBottom') scrollPageTo('bottom');
     });
   } catch (error) {
     console.warn('[gesture] 监听后台消息失败：', error);
@@ -386,8 +394,9 @@
     state.distance = 0;
 
     if (execute) {
-      // 只要按住右键滑动过（哪怕没匹配到手势）就拦掉右键菜单
-      if (distance > 0) {
+      // 轨迹已出现（拖动超过 DRAW_START_DISTANCE，哪怕没匹配到手势）才拦掉右键菜单；
+      // 轨迹没出现就松手，说明只是按下时的手抖，让网页照常弹出右键菜单
+      if (distance >= DRAW_START_DISTANCE) {
         state.suppressMenuUntil = performance.now() + MENU_SUPPRESS_WINDOW;
       }
 

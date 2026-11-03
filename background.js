@@ -14,8 +14,8 @@
 
 const MODEL = 'hy-mt2-lite';
 const DEFAULT_TARGET_LANG = '中文';
-const REQUEST_TIMEOUT_MS = 30_000;
-const MAX_SOURCE_CHARS = 6000;
+const REQUEST_TIMEOUT_MS = 5000;
+const MAX_SOURCE_CHARS = 1000;
 
 /**
  * 接入地域
@@ -66,8 +66,12 @@ const PROXY_BYPASS_LIST = [
   '<local>'
 ];
 
-/** 简易 LRU 上限，避免 Service Worker 内存无限增长 */
-const CACHE_LIMIT = 400;
+/**
+ * 简易 LRU 上限，避免 Service Worker 内存无限增长
+ * key 用 FNV-1a 32 位哈希，Map 里不再长期保存整段原文
+ * 一页通常只有个位数的可翻译段落，100 条足够覆盖多标签页来回切换
+ */
+const CACHE_LIMIT = 100;
 const translationCache = new Map();
 const inflight = new Map();
 
@@ -282,6 +286,22 @@ async function callModel(text, targetLang) {
   );
 }
 
+/**
+ * FNV-1a 32 位哈希
+ *
+ * 原文最长 1000 字，直接当 Map key 会长期占住内存；压成 8 位十六进制后
+ * 每个 key 只有十几个字节。Math.imul 保证 32 位整数乘法不丢精度，
+ * >>> 0 转回无符号数。
+ */
+function fnv1a(text) {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
 function cacheGet(key) {
   if (!translationCache.has(key)) return undefined;
   const value = translationCache.get(key);
@@ -308,7 +328,8 @@ function translateText(rawText, targetLang) {
 
   const text = source.length > MAX_SOURCE_CHARS ? source.slice(0, MAX_SOURCE_CHARS) : source;
   const lang = targetLang || DEFAULT_TARGET_LANG;
-  const cacheKey = `${lang}\u0000${text}`;
+  // 模型与目标语言都参与哈希：换模型 / 换语言后旧译文自然失效
+  const cacheKey = fnv1a(`${MODEL}\u0000${lang}\u0000${text}`);
 
   const cached = cacheGet(cacheKey);
   if (cached !== undefined) return Promise.resolve(cached);
@@ -519,17 +540,17 @@ async function goForwardGestureTab(sender) {
 }
 
 /**
- * 「上」：让顶层框架把整页滚到顶部
+ * 「上」/「下」：让顶层框架把整页滚到顶部 / 底部
  * 手势可能起自 iframe，那里没有可滚动的整页，必须转给 frameId 0
  */
-async function scrollGestureTabTop(sender) {
+async function scrollGestureTab(sender, edge) {
   const tabId = requireTabId(sender);
   try {
-    await chrome.tabs.sendMessage(tabId, { type: 'gesture:scrollTop' }, { frameId: 0 });
+    await chrome.tabs.sendMessage(tabId, { type: `gesture:scroll${edge}` }, { frameId: 0 });
   } catch (error) {
     console.warn('[gesture] 通知顶层框架滚动失败：', error);
   }
-  return { action: 'scrollTop' };
+  return { action: `scroll${edge}` };
 }
 
 /** 恢复最近关闭的页面；最近关闭的是窗口时恢复整个窗口 */
@@ -579,7 +600,9 @@ async function handleMessage(message, sender) {
     case 'gesture:goForward':
       return goForwardGestureTab(sender);
     case 'gesture:scrollTop':
-      return scrollGestureTabTop(sender);
+      return scrollGestureTab(sender, 'Top');
+    case 'gesture:scrollBottom':
+      return scrollGestureTab(sender, 'Bottom');
     case 'gesture:reopenTab':
       return reopenClosedTab();
     default:

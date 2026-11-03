@@ -1,7 +1,7 @@
 /**
  * 段落翻译内容脚本
  *
- * - 对外只暴露 window.__hymtTranslate.translateAtPoint(x, y)，由鼠标手势「下」调用
+ * - 对外只暴露 window.__hymtTranslate.translateAtPoint(x, y)，由鼠标手势「左右」调用
  * - 普通段落：译文卡片插入在段落末尾（原文下方）
  * - 链接、按钮等不便内嵌的位置，或段落被裁剪导致卡片显示不全时：改用气泡浮层
  * - 气泡在页面滚动、点击别处或按 Esc 时自动关闭；译文已缓存，再次触发直接显示
@@ -24,7 +24,8 @@
   const PANEL_TAG_UPPER = 'HYMT-PANEL';
   const MODEL_LABEL = 'hy-mt2-lite';
   const TARGET_LANG = '中文';
-  const MAX_SOURCE_CHARS = 2000;
+  /** 与 background.js 的上限保持一致，否则后台静默截断时面板不会提示「已截断」 */
+  const MAX_SOURCE_CHARS = 1000;
 
   /** 这些交互元素不能把译文插进去（会撑破布局 / 误触点击），改用气泡显示 */
   const CONTROL_ANCESTOR = [
@@ -1040,7 +1041,7 @@
   }
 
   /* ==========================================================================
-   * 对外接口：由 content/gesture.js 在「下」手势结束时调用
+   * 对外接口：由 content/gesture.js 在「左右」手势结束时调用
    *
    * 两个脚本同处一个内容脚本隔离世界，直接挂在 window 即可，
    * 网页脚本看不到这个属性。
