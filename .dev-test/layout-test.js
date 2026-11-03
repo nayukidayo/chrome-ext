@@ -133,7 +133,12 @@ function createEnv(vw, vh) {
     console,
     // 元素遍历用到的全局常量
     Node: { ELEMENT_NODE: 1, TEXT_NODE: 3 },
-    document: { documentElement: docEl, body, caretRangeFromPoint: () => null },
+    document: {
+      documentElement: docEl,
+      body,
+      caretRangeFromPoint: () => null,
+      createElement: (tag) => makeEl(tag, { top: 0, left: 0, width: 0, height: 0 })
+    },
     getComputedStyle: (node) => node.__cs,
     window: {
       innerWidth: vw,
@@ -270,9 +275,9 @@ const body = env.body;
   check('进入浮层 -> 设置 popover 属性', host.attributes.has('popover'), true);
   check('进入浮层 -> 打上 data-floating', 'floating' in host.dataset, true);
   check(
-    '进入浮层 -> 新增 scroll/resize/keydown 监听',
+    '进入浮层 -> 新增 scroll/resize/pointerdown/keydown 监听',
     [...env.listeners].filter((k) => !env.baseline.has(k)).sort(),
-    ['keydown:true', 'resize:false', 'scroll:true']
+    ['keydown:true', 'pointerdown:true', 'resize:false', 'scroll:true']
   );
 
   t.exitFloatMode(record);

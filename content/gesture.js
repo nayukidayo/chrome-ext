@@ -8,6 +8,7 @@
  *   左   → 后退（上一页）
  *   右   → 前进（下一页）
  *   上   → 整个页面滚动到顶部（不处理页面内部的滚动容器）
+ *   下   → 翻译手势起点处的段落
  *
  * 实现要点：
  * - Pointer Events + 指针捕获：右键拖动期间事件不会因为移出元素而中断
@@ -54,7 +55,8 @@
     ['UD', 'reloadTab'], // 上下：刷新
     ['L', 'goBack'], // 左：后退
     ['R', 'goForward'], // 右：前进
-    ['U', 'scrollTop'] // 上：回到顶部
+    ['U', 'scrollTop'], // 上：回到顶部
+    ['D', 'translate'] // 下：翻译手势起点处的段落
   ]);
 
   const state = {
@@ -357,7 +359,12 @@
     }
   }
 
-  function runAction(action) {
+  function runAction(action, start) {
+    if (action === 'translate') {
+      translateAtPoint(start);
+      return;
+    }
+
     if (action === 'scrollTop') {
       // 手势可能起自 iframe（例如资讯站内嵌的「大家在看」板块）：
       // 子框架滚不到整页，交给后台转发给顶层框架执行
@@ -366,6 +373,19 @@
       return;
     }
     void sendAction(action);
+  }
+
+  /** 手势「下」：翻译轨迹起点处的段落，具体定位与展示由 content/translate.js 负责 */
+  function translateAtPoint(point) {
+    if (!point) return;
+
+    const api = window.__hymtTranslate;
+    if (!api || typeof api.translateAtPoint !== 'function') {
+      console.warn('[gesture] 翻译脚本未就绪，无法翻译');
+      return;
+    }
+
+    api.translateAtPoint(point.x, point.y);
   }
 
   /* 后台转发来的动作（目前只有顶层框架的「上」） */
@@ -394,6 +414,7 @@
     state.tracking = false;
 
     const points = state.points;
+    const start = points[0];
     const last = points[points.length - 1];
     if (Number.isFinite(x) && Number.isFinite(y)) {
       const step = Math.hypot(x - last.x, y - last.y);
@@ -416,7 +437,7 @@
 
       const pattern = extractDirections(points);
       const action = GESTURES.get(pattern);
-      if (action) runAction(action);
+      if (action) runAction(action, start);
     }
 
     fadeOutTrail(points);

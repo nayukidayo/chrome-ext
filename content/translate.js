@@ -1,8 +1,10 @@
 /**
  * 段落翻译内容脚本
  *
- * - 按住 Ctrl 并左键点击网页段落 → 在该段落末尾插入译文卡片
- * - 再次 Ctrl + 点击同一段落 → 隐藏译文（译文已缓存，再点即可恢复显示）
+ * - 对外只暴露 window.__hymtTranslate.translateAtPoint(x, y)，由鼠标手势「下」调用
+ * - 普通段落：译文卡片插入在段落末尾（原文下方）
+ * - 链接、按钮等不便内嵌的位置，或段落被裁剪导致卡片显示不全时：改用气泡浮层
+ * - 气泡在页面滚动、点击别处或按 Esc 时自动关闭；译文已缓存，再次触发直接显示
  *
  * 实现要点：
  * - 通过 caretRangeFromPoint 取得鼠标所在文字节点，向上找到最近的块级容器作为「段落」
@@ -24,24 +26,34 @@
   const TARGET_LANG = '中文';
   const MAX_SOURCE_CHARS = 2000;
 
-  /** 这些元素上的 Ctrl+点击保持浏览器原生行为（新标签打开、按钮点击等） */
-  const SKIP_ANCESTOR = [
+  /** 这些交互元素不能把译文插进去（会撑破布局 / 误触点击），改用气泡显示 */
+  const CONTROL_ANCESTOR = [
     'a[href]',
     'button',
-    'input',
-    'textarea',
-    'select',
-    'option',
-    'label',
     'summary',
+    'label',
     '[role="button"]',
     '[role="link"]',
     '[role="checkbox"]',
     '[role="menuitem"]',
-    '[role="tab"]',
+    '[role="tab"]'
+  ].join(',');
+
+  /** 这些元素不适合翻译，或插入面板会破坏原生行为，直接跳过 */
+  const SKIP_ANCESTOR = [
+    'input',
+    'textarea',
+    'select',
+    'option',
     '[contenteditable=""]',
     '[contenteditable="true"]',
-    '[contenteditable="plaintext-only"]'
+    '[contenteditable="plaintext-only"]',
+    'pre',
+    'code',
+    'kbd',
+    'samp',
+    'svg',
+    'math'
   ].join(',');
 
   const BLOCK_DISPLAYS = new Set([
@@ -260,11 +272,10 @@
   const panelTemplate = document.createElement('template');
   panelTemplate.innerHTML = PANEL_HTML;
 
-  /** block -> record */
+  /** 目标元素 -> record */
   const records = new WeakMap();
   const liveRecords = new Set();
   const state = { enabled: true };
-  let pendingBlock = null;
 
   /* ==========================================================================
    * 设置
@@ -347,25 +358,35 @@
     return null;
   }
 
-  function resolveBlockAt(x, y) {
+  /**
+   * 鼠标位置 -> 翻译目标
+   * bubbleOnly 为 true 时表示该位置不适合内嵌（链接、按钮等），只能使用气泡。
+   */
+  function resolveTargetAt(x, y) {
     const element = elementAtPoint(x, y);
     if (!element || !element.closest) return null;
     if (isOwnPanel(element)) return null;
     if (element.closest(SKIP_ANCESTOR)) return null;
+
+    const control = element.closest(CONTROL_ANCESTOR);
+    if (control) {
+      if (control.isContentEditable) return null;
+      return { key: control, block: control, anchor: control, bubbleOnly: true };
+    }
 
     const block = findBlock(element);
     if (!block) return null;
     if (block.isContentEditable) return null;
     if (block.closest('pre, code, kbd, samp, svg, math')) return null;
 
-    return block;
+    return { key: block, block, anchor: block, bubbleOnly: false };
   }
 
   /* ==========================================================================
    * 取原文
    * ======================================================================== */
 
-  function extractSource(block) {
+  function extractSource(element) {
     // 取原文时先把所有已显示的译文面板藏起来（含嵌套段落里的），避免把译文当成原文
     const hiddenRecords = [];
     for (const record of liveRecords) {
@@ -377,7 +398,7 @@
 
     let text = '';
     try {
-      text = block.innerText || block.textContent || '';
+      text = element.innerText || element.textContent || '';
     } finally {
       for (const record of hiddenRecords) record.host.hidden = false;
     }
@@ -409,7 +430,7 @@
    * 面板
    * ======================================================================== */
 
-  function createRecord(block) {
+  function createRecord(target) {
     const host = document.createElement(PANEL_TAG);
     host.hidden = true;
 
@@ -419,7 +440,10 @@
     shadow.appendChild(panelTemplate.content.cloneNode(true));
 
     const record = {
-      block,
+      target,
+      block: target.block,
+      anchor: target.anchor,
+      bubbleOnly: target.bubbleOnly,
       host,
       body: shadow.querySelector('.body'),
       meta: shadow.querySelector('.meta'),
@@ -435,7 +459,9 @@
       floating: false,
       layoutFrame: 0,
       floatFrame: 0,
-      onViewportChange: null,
+      onScroll: null,
+      onResize: null,
+      onOutsidePointerDown: null,
       onKeydown: null,
       resizeObserver: null
     };
@@ -452,7 +478,14 @@
       if (record.status === 'error') void requestTranslation(record);
     });
 
-    block.appendChild(host);
+    if (record.bubbleOnly) {
+      // 没有可以承载卡片的段落，直接挂到 body，显示时进入 top layer
+      (document.body || document.documentElement).appendChild(host);
+    } else {
+      // 普通段落：先插到段落末尾，被裁剪时再由 tryHoist / 浮层接管
+      record.block.appendChild(host);
+    }
+
     return record;
   }
 
@@ -462,6 +495,7 @@
    * 面板默认按文档流插在段落末尾。若段落自身或祖先有裁剪（固定高度 + overflow、
    * -webkit-line-clamp、contain:paint、clip-path 等），面板会被切掉，
    * 此时改用 Popover API 把面板提升到 top layer，彻底摆脱祖先裁剪。
+   * 气泡在页面滚动或点击别处时自动关闭（见 enterFloatMode）。
    * ======================================================================== */
 
   function viewportWidth() {
@@ -620,7 +654,13 @@
     const host = record.host;
     if (!record.floating || !host.isConnected) return;
 
-    const anchor = record.block.getBoundingClientRect();
+    const anchorEl = record.anchor || record.block;
+    if (!anchorEl || !anchorEl.isConnected) {
+      hideRecord(record);
+      return;
+    }
+
+    const anchor = anchorEl.getBoundingClientRect();
     const vw = viewportWidth();
     const vh = viewportHeight();
 
@@ -691,10 +731,26 @@
     }
 
     placeFloat(record);
+    if (!record.floating) return; // 目标已从文档移除，placeFloat 会直接收起气泡
 
-    record.onViewportChange = () => scheduleFloatReposition(record);
-    window.addEventListener('scroll', record.onViewportChange, true);
-    window.addEventListener('resize', record.onViewportChange);
+    // 气泡随页面滚动关闭：捕获阶段监听，页面内部滚动容器也能收到。
+    // 滚动发生在气泡自身（长译文内部滚动）时忽略。
+    record.onScroll = (event) => {
+      const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+      if (path.includes(host)) return;
+      hideRecord(record);
+    };
+    window.addEventListener('scroll', record.onScroll, true);
+
+    record.onResize = () => scheduleFloatReposition(record);
+    window.addEventListener('resize', record.onResize);
+
+    // 点击 / 右键按到气泡之外时关闭
+    record.onOutsidePointerDown = (event) => {
+      if (isOwnPanelEvent(event)) return;
+      hideRecord(record);
+    };
+    window.addEventListener('pointerdown', record.onOutsidePointerDown, true);
 
     record.onKeydown = (event) => {
       if (event.key !== 'Escape') return;
@@ -721,10 +777,19 @@
       record.floatFrame = 0;
     }
 
-    if (record.onViewportChange) {
-      window.removeEventListener('scroll', record.onViewportChange, true);
-      window.removeEventListener('resize', record.onViewportChange);
-      record.onViewportChange = null;
+    if (record.onScroll) {
+      window.removeEventListener('scroll', record.onScroll, true);
+      record.onScroll = null;
+    }
+
+    if (record.onResize) {
+      window.removeEventListener('resize', record.onResize);
+      record.onResize = null;
+    }
+
+    if (record.onOutsidePointerDown) {
+      window.removeEventListener('pointerdown', record.onOutsidePointerDown, true);
+      record.onOutsidePointerDown = null;
     }
 
     if (record.onKeydown) {
@@ -768,6 +833,13 @@
   /** 内容或可见性变化后重新决定布局 */
   function refreshLayout(record) {
     if (record.destroyed || !record.visible) return;
+
+    if (record.bubbleOnly) {
+      if (record.floating) scheduleFloatReposition(record);
+      else enterFloatMode(record);
+      return;
+    }
+
     if (record.floating) scheduleFloatReposition(record);
     else scheduleLayoutCheck(record);
   }
@@ -786,7 +858,10 @@
     }
 
     record.host.hidden = false;
-    refreshLayout(record);
+
+    // 链接 / 按钮等没有可承载的段落，直接以气泡显示
+    if (record.bubbleOnly) enterFloatMode(record);
+    else refreshLayout(record);
   }
 
   function showRecord(record) {
@@ -811,7 +886,7 @@
 
     exitFloatMode(record);
     record.host.remove();
-    records.delete(record.block);
+    records.delete(record.target?.key || record.block);
     liveRecords.delete(record);
   }
 
@@ -911,10 +986,24 @@
     }
   }
 
-  function toggleBlock(block) {
+  function sourceOf(target) {
+    const { text, truncated } = extractSource(target.anchor);
+    if (text || !target.bubbleOnly) return { text, truncated };
+
+    // 图标按钮等没有可见文字时，退回无障碍文本
+    const element = target.anchor;
+    const label = String(
+      element.getAttribute('aria-label') || element.getAttribute('title') || element.getAttribute('alt') || ''
+    )
+      .replace(/\s+/g, ' ')
+      .trim();
+    return { text: label, truncated: false };
+  }
+
+  function toggleTarget(target) {
     pruneDetachedRecords();
 
-    const existing = records.get(block);
+    const existing = records.get(target.key);
 
     if (existing) {
       if (existing.visible) {
@@ -926,11 +1015,11 @@
       return;
     }
 
-    const record = createRecord(block);
-    records.set(block, record);
+    const record = createRecord(target);
+    records.set(target.key, record);
     liveRecords.add(record);
 
-    const { text, truncated } = extractSource(block);
+    const { text, truncated } = sourceOf(target);
     record.source = text;
     record.truncated = truncated;
 
@@ -951,39 +1040,25 @@
   }
 
   /* ==========================================================================
-   * 事件
+   * 对外接口：由 content/gesture.js 在「下」手势结束时调用
+   *
+   * 两个脚本同处一个内容脚本隔离世界，直接挂在 window 即可，
+   * 网页脚本看不到这个属性。
    * ======================================================================== */
 
-  function handleMouseDown(event) {
-    pendingBlock = null;
-
+  function translateAtPoint(x, y) {
     if (!state.enabled) return;
-    if (event.button !== 0 || !event.ctrlKey) return;
-    if (event.shiftKey || event.altKey || event.metaKey) return;
-    if (isOwnPanelEvent(event)) return;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
 
-    const block = resolveBlockAt(event.clientX, event.clientY);
-    if (!block) return;
+    const target = resolveTargetAt(x, y);
+    if (!target) return;
 
-    pendingBlock = block;
-    // 阻止 Ctrl+点击 触发的选区 / 拖拽等默认行为
-    event.preventDefault();
+    toggleTarget(target);
   }
 
-  function handleClick(event) {
-    const block = pendingBlock;
-    pendingBlock = null;
-
-    if (!block || !state.enabled) return;
-    if (event.button !== 0 || !event.ctrlKey) return;
-    if (isOwnPanelEvent(event)) return;
-
-    event.preventDefault();
-    event.stopImmediatePropagation();
-
-    toggleBlock(block);
+  try {
+    window.__hymtTranslate = { translateAtPoint };
+  } catch (error) {
+    console.warn('[HY-MT] 注册翻译接口失败：', error);
   }
-
-  window.addEventListener('mousedown', handleMouseDown, true);
-  window.addEventListener('click', handleClick, true);
 })();
