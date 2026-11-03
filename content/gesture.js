@@ -127,16 +127,9 @@
     ].join(';');
 
     const shadow = host.attachShadow({ mode: 'closed' });
-    try {
-      const sheet = new CSSStyleSheet();
-      sheet.replaceSync(OVERLAY_CSS);
-      shadow.adoptedStyleSheets = [sheet];
-    } catch (error) {
-      // 旧版内核兜底
-      const style = document.createElement('style');
-      style.textContent = OVERLAY_CSS;
-      shadow.appendChild(style);
-    }
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(OVERLAY_CSS);
+    shadow.adoptedStyleSheets = [sheet];
 
     const canvas = document.createElement('canvas');
     shadow.appendChild(canvas);

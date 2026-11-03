@@ -7,6 +7,7 @@
  * 实现要点：
  * - 通过 caretRangeFromPoint 取得鼠标所在文字节点，向上找到最近的块级容器作为「段落」
  * - 译文面板使用自定义元素 + Shadow DOM + 构造式样式表，避免被页面样式 / CSP 干扰
+ * - 样式表与模板在全文档内只解析一次，所有面板实例共享
  * - 面板内容全部使用 textContent 写入，不注入任何 HTML
  * - 段落被固定高度 / overflow / line-clamp 等容器裁剪时，自动改用 Popover 顶层浮层显示
  */
@@ -235,6 +236,30 @@
     </div>
   `;
 
+  /* ==========================================================================
+   * 共享资源：样式表 / 模板
+   *
+   * 同一个构造式样式表可以被任意多个 ShadowRoot 同时 adopt，改动会同步到所有
+   * 采用它的 root，所以整篇文档只需要解析一次 CSS。限制是 sheet 必须在本
+   * Document 内构造：内容脚本以 all_frames 注入，每个 iframe 各自持有一份即
+   * 每个 document 一份，正好符合要求。
+   * ======================================================================== */
+
+  let panelSheet = null;
+
+  /** 取共享样式表（minimum_chrome_version 156 已保证构造式样式表可用） */
+  function getPanelSheet() {
+    if (!panelSheet) {
+      panelSheet = new CSSStyleSheet();
+      panelSheet.replaceSync(PANEL_CSS);
+    }
+    return panelSheet;
+  }
+
+  /** PANEL_HTML 只解析一次，之后靠 cloneNode 复制 */
+  const panelTemplate = document.createElement('template');
+  panelTemplate.innerHTML = PANEL_HTML;
+
   /** block -> record */
   const records = new WeakMap();
   const liveRecords = new Set();
@@ -389,20 +414,9 @@
     host.hidden = true;
 
     const shadow = host.attachShadow({ mode: 'open' });
-    try {
-      const sheet = new CSSStyleSheet();
-      sheet.replaceSync(PANEL_CSS);
-      shadow.adoptedStyleSheets = [sheet];
-    } catch (error) {
-      // 旧版内核兜底
-      const style = document.createElement('style');
-      style.textContent = PANEL_CSS;
-      shadow.appendChild(style);
-    }
+    shadow.adoptedStyleSheets = [getPanelSheet()];
 
-    const wrapper = document.createElement('div');
-    wrapper.innerHTML = PANEL_HTML;
-    shadow.appendChild(wrapper);
+    shadow.appendChild(panelTemplate.content.cloneNode(true));
 
     const record = {
       block,
