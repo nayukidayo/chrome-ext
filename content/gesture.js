@@ -4,7 +4,7 @@
  * 按住鼠标右键在页面中划动，根据轨迹方向执行动作：
  *   左右 → 翻译手势起点处的段落
  *   下右 → 关闭当前页面
- *   上左 → 打开刚关闭的页面
+ *   左上 → 打开刚关闭的页面
  *   上下 → 刷新页面
  *   左   → 后退（上一页）
  *   右   → 前进（下一页）
@@ -13,14 +13,18 @@
  *
  * 实现要点：
  * - Pointer Events + 指针捕获：右键拖动期间事件不会因为移出元素而中断
- * - 轨迹先按 Ramer–Douglas–Peucker 简化，再映射成 U/D/L/R 方向序列，手抖不会误判
- * - 方向锥：上 / 下 / 左 / 右各有一个 30° 的夹角，只有段方向落在某个锥形内才算命中方向；
- *   锥形之间的对角区域是模糊区，拐弯时的过渡轨迹会被直接忽略，既不产生方向也不切断当前段，
- *   直到轨迹重新笔直指向某个方向才继续判定——组合手势的拐弯因此能平滑过渡
- * - 严格判定：方向串必须与手势完全一致（只包含触发手势的方向），
- *   且每个方向段都要长于 MIN_DIRECTION_LENGTH（30px）；任何一段太短都判为无效，
- *   不会被忽略，如「先向右 20px 再向下」不会误触发「下」
- * - 单方向手势还要求整条轨迹的总位移也落在该方向的夹角内，否则视为「在夹角外」，整个操作无效
+ * - 方向用数字小键盘表示（指针在 5，轨迹相对拐点指向哪个键就记哪个数字）：
+ *       7 8 9
+ *       4 5 6
+ *       1 2 3
+ *   正方向 8 / 2 / 4 / 6 各占 40°（坐标轴左右各 20°），斜方向 7 / 9 / 1 / 3 各占 50°，
+ *   八个扇形正好铺满 360°；鼠标向右拖动记 6，向左上拖动记 7
+ * - 轨迹先按 Ramer–Douglas–Peucker 简化，再逐段映射成小键盘数字；
+ *   连续的同方向只记一次，相邻同方向段合并
+ * - 一段手势只能由 8 / 2 / 4 / 6 组成，起手是斜方向直接无效；
+ *   多段手势的斜方向只能夹在两个正方向之间，且必须和两边都有联系（落在旋转路径上）
+ * - 严格判定：任何一段短于 MIN_DIRECTION_LENGTH（20px）都整条判为无效，
+ *   不会被忽略，如「先向右 15px 再向下」不会误触发「下」
  * - 拖动距离达到 DRAW_START_DISTANCE（轨迹出现）才拦掉网页右键菜单（不要求匹配到手势）；
  *   更小的位移视为按下时的手抖，按普通右键点击处理，照常弹出菜单
  * - 轨迹是单色实线，绘制在 Shadow DOM 里的全屏 SVG 上（矢量，无需处理 DPR），
@@ -40,21 +44,18 @@
    * ======================================================================== */
 
   /**
-   * 每个方向段（直线段）的最短长度
-   * 严格判定：简化后只要有方向段短于此值，整个手势就判为无效（不是忽略该段），
-   * 所以「下」不会因为轨迹里夹了一小段别的方向而误触发
+   * 每个方向段的最短长度（px）
+   * 严格判定：按小键盘方向切开后，任何一段短于此值都让整条手势无效（不是忽略该段），
+   * 所以「先向右 15px 再向下」不会误触发「下」
    */
-  const MIN_DIRECTION_LENGTH = 30;
-  /**
-   * 方向锥的夹角（度）：以四个轴向（上 / 下 / 左 / 右）为中心、左右各 HALF_CONE 度
-   * 只有段方向落在锥形内才算命中该方向；锥形之间的对角区域是模糊区，
-   * 拐弯时的过渡轨迹会落在这里，被直接忽略，不会产生方向段
-   */
-  const DIRECTION_CONE = 30;
-  const HALF_CONE = DIRECTION_CONE / 2;
+  const MIN_DIRECTION_LENGTH = 20;
   /** 轨迹采样间距：移动超过该距离才记录一个点 */
   const SAMPLE_DISTANCE = 2;
-  /** RDP 轨迹简化容差：消除手抖与轻微弧度 */
+  /**
+   * RDP 轨迹简化容差（px）
+   * 必须小于 MIN_DIRECTION_LENGTH：小于容差的抖动 / 小半径拐弯会被折线吸收，
+   * 不会被记成一个太短的方向段；真正的拐弯则保留下来参与长度判定
+   */
   const SIMPLIFY_TOLERANCE = 12;
   /**
    * 累计移动超过该距离才开始显示轨迹
@@ -69,16 +70,21 @@
   const TRAIL_RGB = '24, 119, 242';
   const TRAIL_WIDTH = 3;
 
-  /** 方向序列 → 动作 */
+  /** 正方向（8 上 / 2 下 / 4 左 / 6 右） */
+  const STRAIGHT_DIGITS = new Set([8, 2, 4, 6]);
+  /** 小键盘数字的中心方位角：0° 向右、90° 向下（屏幕坐标 y 轴向下） */
+  const DIGIT_ANGLE = { 6: 0, 3: 45, 2: 90, 1: 135, 4: 180, 7: 225, 8: 270, 9: 315 };
+
+  /** 正方向序列（去掉拐弯斜方向后的规范化数字串）→ 动作 */
   const GESTURES = new Map([
-    ['DR', 'closeTab'], // 下右：关闭当前页面
-    ['UL', 'reopenTab'], // 上左：打开刚关闭的页面
-    ['UD', 'reloadTab'], // 上下：刷新
-    ['L', 'goBack'], // 左：后退
-    ['R', 'goForward'], // 右：前进
-    ['LR', 'translate'], // 左右：翻译手势起点处的段落
-    ['U', 'scrollTop'], // 上：整个页面滚动到顶部
-    ['D', 'scrollBottom'] // 下：整个页面滚动到底部
+    ['26', 'closeTab'], // 下右：关闭当前页面
+    ['48', 'reopenTab'], // 左上：打开刚关闭的页面
+    ['82', 'reloadTab'], // 上下：刷新
+    ['4', 'goBack'], // 左：后退
+    ['6', 'goForward'], // 右：前进
+    ['46', 'translate'], // 左右：翻译手势起点处的段落
+    ['8', 'scrollTop'], // 上：整个页面滚动到顶部
+    ['2', 'scrollBottom'] // 下：整个页面滚动到底部
   ]);
 
   const state = {
@@ -517,22 +523,67 @@
 
   /* ==========================================================================
    * 手势识别
+   *
+   * 方向记法（指针在 5，以指针为原点）：
+   *       7 8 9
+   *       4 5 6
+   *       1 2 3
    * ======================================================================== */
 
   /**
-   * 方向向量 → U / D / L / R
-   * 只有方向落在某个方向锥内才算命中；锥外（对角附近的模糊区）返回 null，
-   * 调用方会把这部分轨迹当作拐弯过渡直接忽略
+   * 方向向量 → 小键盘数字
+   * 8 / 2 / 4 / 6 各占 40°（以轴向为中心、左右各 20°），
+   * 7 / 9 / 1 / 3 各占 50°（夹在两个轴向之间），八个扇形铺满 360°
    */
-  function directionOf(dx, dy) {
-    if (dx === 0 && dy === 0) return null;
+  function digitOf(dx, dy) {
+    if (dx === 0 && dy === 0) return 0;
 
-    // 与水平轴的夹角：0° 为纯水平，90° 为纯垂直
-    const angle = (Math.atan2(Math.abs(dy), Math.abs(dx)) * 180) / Math.PI;
+    // 方位角：0° 向右、90° 向下（屏幕坐标 y 轴向下）
+    const angle = ((Math.atan2(dy, dx) * 180) / Math.PI + 360) % 360;
 
-    if (angle <= HALF_CONE) return dx >= 0 ? 'R' : 'L';
-    if (angle >= 90 - HALF_CONE) return dy >= 0 ? 'D' : 'U';
-    return null;
+    if (angle < 20) return 6;
+    if (angle < 70) return 3;
+    if (angle < 110) return 2;
+    if (angle < 160) return 1;
+    if (angle < 200) return 4;
+    if (angle < 250) return 7;
+    if (angle < 290) return 8;
+    if (angle < 340) return 9;
+    return 6;
+  }
+
+  /** from 转到 to 的最短旋转角，结果落在 (-180, 180] */
+  function signedDelta(from, to) {
+    const delta = ((to - from) % 360 + 360) % 360;
+    return delta > 180 ? delta - 360 : delta;
+  }
+
+  /**
+   * 斜方向是否夹在两个正方向之间
+   * 三者必须落在同一条旋转路径上：prev → diagonal → next 的旋转方向一致，
+   * 且两段转角之和等于 prev → next 的最短转角。
+   * 比如「下右」的 2 → 3 → 6 合法，2 → 1 → 6 不合法（1 在另一侧）。
+   * 180° 掉头（上下 / 左右）两条旋转路径等长，斜方向在哪一侧就按哪一侧算
+   */
+  function isDiagonalBetween(prev, diagonal, next) {
+    const from = DIGIT_ANGLE[prev];
+    const via = DIGIT_ANGLE[diagonal];
+    const to = DIGIT_ANGLE[next];
+
+    const first = signedDelta(from, via);
+    const second = signedDelta(via, to);
+    let total = signedDelta(from, to);
+
+    if (total === 180) total = first > 0 ? 180 : -180;
+
+    return (
+      total !== 0 &&
+      first !== 0 &&
+      second !== 0 &&
+      Math.sign(first) === Math.sign(total) &&
+      Math.sign(second) === Math.sign(total) &&
+      Math.abs(first) + Math.abs(second) === Math.abs(total)
+    );
   }
 
   /** Ramer–Douglas–Peucker 轨迹简化 */
@@ -593,41 +644,35 @@
   }
 
   /**
-   * 采样点 → 方向串
-   * 1. RDP 简化去掉手抖（偏差不超过 SIMPLIFY_TOLERANCE 的抖动不产生折点），
-   *    拐弯处的圆弧会被拆成若干折线段
-   * 2. 每段按方向锥分类；锥外的段（拐弯时的模糊轨迹）直接跳过：
-   *    它既不产生方向，也不打断当前段，所以「下 → 斜线 → 下」仍是一段「下」，
-   *    「下 → 斜线 → 右」则得到「下」「右」两段
-   * 3. 合并相邻同方向段
-   * 4. 严格判定：只要有方向段短于 MIN_DIRECTION_LENGTH 就返回空串（整个手势无效），
-   *    而不是丢弃这一段；否则「先向右 20px 再向下」会被简化成「下」而误触发
-   * 5. 单方向手势还要求整条轨迹的总位移也落在同一个方向锥内，否则视为「在夹角外」，
-   *    整个操作无效
-   * 6. 方向串必须与 GESTURES 中的键完全一致，多一段、少一段都不触发
+   * 采样点 → 规范化手势序列（只保留正方向，如 '26'、'48'）
+   *
+   * 1. RDP 简化去掉手抖：小抖动和小半径的拐弯会被折线吸收，不产生方向段
+   * 2. 逐段映射成小键盘数字，连续的同方向只记一次（相邻同方向段合并、长度累加）
+   * 3. 严格判定：任何一段短于 MIN_DIRECTION_LENGTH 就返回空串（整条无效），
+   *    而不是丢弃这一段；否则「先向右 15px 再向下」会被简化成「下」而误触发
+   * 4. 一段手势只能是 8 / 2 / 4 / 6，起手是斜方向直接无效
+   * 5. 多段手势：起手 / 收尾必须是正方向；斜方向只能夹在两个正方向之间，
+   *    且必须落在两者的旋转路径上（见 isDiagonalBetween）
+   * 6. 去掉斜方向后得到规范序列，交给 GESTURES 精确匹配：
+   *    「下右」的 [2,6] / [2,3,6] 都规范成 '26'，多一段少一段都不触发
    */
-  function extractDirections(points) {
+  function extractPattern(points) {
     const vertices = simplifyPath(points, SIMPLIFY_TOLERANCE);
+    if (vertices.length < 2) return '';
 
-    /** @type {{ direction: 'U' | 'D' | 'L' | 'R', length: number }[]} */
+    /** @type {{ digit: number, length: number }[]} */
     const segments = [];
 
     for (let i = 1; i < vertices.length; i += 1) {
       const dx = vertices[i].x - vertices[i - 1].x;
       const dy = vertices[i].y - vertices[i - 1].y;
       const length = Math.hypot(dx, dy);
-      if (length === 0) continue;
+      if (length < 0.5) continue;
 
-      // 拐弯处的过渡轨迹不在任何方向锥内，直接忽略
-      const direction = directionOf(dx, dy);
-      if (!direction) continue;
-
+      const digit = digitOf(dx, dy);
       const previous = segments[segments.length - 1];
-      if (previous && previous.direction === direction) {
-        previous.length += length;
-      } else {
-        segments.push({ direction, length });
-      }
+      if (previous && previous.digit === digit) previous.length += length;
+      else segments.push({ digit, length });
     }
 
     if (segments.length === 0) return '';
@@ -637,15 +682,30 @@
       if (segment.length < MIN_DIRECTION_LENGTH) return '';
     }
 
-    // 单方向手势：整条轨迹的总位移也必须落在同一个方向上。
-    // 前面对折线段逐个判定，缓慢偏斜的长曲线可能各小段都在锥内、整体却已明显偏出夹角
-    if (segments.length === 1) {
-      const start = points[0];
-      const end = points[points.length - 1];
-      if (directionOf(end.x - start.x, end.y - start.y) !== segments[0].direction) return '';
+    const digits = segments.map((segment) => segment.digit);
+
+    if (digits.length === 1) {
+      // 一段手势只能是正方向；起手是斜方向直接无效
+      return STRAIGHT_DIGITS.has(digits[0]) ? String(digits[0]) : '';
     }
 
-    return segments.map((segment) => segment.direction).join('');
+    // 多段手势：起手 / 收尾必须是正方向（斜方向只能出现在中间）
+    if (!STRAIGHT_DIGITS.has(digits[0]) || !STRAIGHT_DIGITS.has(digits[digits.length - 1])) {
+      return '';
+    }
+
+    // 斜方向必须和前后两个正方向都有联系
+    for (let i = 1; i < digits.length - 1; i += 1) {
+      if (STRAIGHT_DIGITS.has(digits[i])) continue;
+
+      const previous = digits[i - 1];
+      const next = digits[i + 1];
+      if (!STRAIGHT_DIGITS.has(previous) || !STRAIGHT_DIGITS.has(next)) return '';
+      if (!isDiagonalBetween(previous, digits[i], next)) return '';
+    }
+
+    // 去掉拐弯处的斜方向：'下右' 的 [2,6] / [2,3,6] 都规范成 '26'
+    return digits.filter((digit) => STRAIGHT_DIGITS.has(digit)).join('');
   }
 
   /* ==========================================================================
@@ -764,7 +824,7 @@
         state.suppressMenuUntil = performance.now() + MENU_SUPPRESS_WINDOW;
       }
 
-      const pattern = extractDirections(points);
+      const pattern = extractPattern(points);
       const action = GESTURES.get(pattern);
       if (action) runAction(action, start);
     }
