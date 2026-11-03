@@ -14,12 +14,19 @@
  * 实现要点：
  * - Pointer Events + 指针捕获：右键拖动期间事件不会因为移出元素而中断
  * - 轨迹先按 Ramer–Douglas–Peucker 简化，再映射成 U/D/L/R 方向序列，手抖不会误判
- * - 只按「每个方向段」的长度判定：每段都要长于 MIN_DIRECTION_LENGTH（30px），
- *   如「下右」要求向下、向右各超过 30px；不看总轨迹长度
+ * - 方向锥：上 / 下 / 左 / 右各有一个 30° 的夹角，只有段方向落在某个锥形内才算命中方向；
+ *   锥形之间的对角区域是模糊区，拐弯时的过渡轨迹会被直接忽略，既不产生方向也不切断当前段，
+ *   直到轨迹重新笔直指向某个方向才继续判定——组合手势的拐弯因此能平滑过渡
+ * - 严格判定：方向串必须与手势完全一致（只包含触发手势的方向），
+ *   且每个方向段都要长于 MIN_DIRECTION_LENGTH（30px）；任何一段太短都判为无效，
+ *   不会被忽略，如「先向右 20px 再向下」不会误触发「下」
+ * - 单方向手势还要求整条轨迹的总位移也落在该方向的夹角内，否则视为「在夹角外」，整个操作无效
  * - 拖动距离达到 DRAW_START_DISTANCE（轨迹出现）才拦掉网页右键菜单（不要求匹配到手势）；
  *   更小的位移视为按下时的手抖，按普通右键点击处理，照常弹出菜单
  * - 轨迹是单色实线，绘制在 Shadow DOM 里的全屏 SVG 上（矢量，无需处理 DPR），
  *   使用构造式样式表，避免被页面样式 / CSP 干扰
+ * - 轨迹浮层永远在窗口最上层：手势起自 iframe 时，轨迹点会逐级转发到顶层框架，
+ *   由顶层统一绘制（否则会被 iframe 的边界裁掉），右键菜单也由顶层负责拦截
  */
 
 (() => {
@@ -32,8 +39,19 @@
    * 参数
    * ======================================================================== */
 
-  /** 每个方向段（直线段）的最短长度：短于此值的抖动会被忽略，也不会触发手势 */
+  /**
+   * 每个方向段（直线段）的最短长度
+   * 严格判定：简化后只要有方向段短于此值，整个手势就判为无效（不是忽略该段），
+   * 所以「下」不会因为轨迹里夹了一小段别的方向而误触发
+   */
   const MIN_DIRECTION_LENGTH = 30;
+  /**
+   * 方向锥的夹角（度）：以四个轴向（上 / 下 / 左 / 右）为中心、左右各 HALF_CONE 度
+   * 只有段方向落在锥形内才算命中该方向；锥形之间的对角区域是模糊区，
+   * 拐弯时的过渡轨迹会落在这里，被直接忽略，不会产生方向段
+   */
+  const DIRECTION_CONE = 30;
+  const HALF_CONE = DIRECTION_CONE / 2;
   /** 轨迹采样间距：移动超过该距离才记录一个点 */
   const SAMPLE_DISTANCE = 2;
   /** RDP 轨迹简化容差：消除手抖与轻微弧度 */
@@ -121,6 +139,8 @@
   /** @type {{ host: HTMLElement, svg: SVGSVGElement, path: SVGPathElement } | null} */
   let overlay = null;
   let drawFrame = 0;
+  /** 本帧待绘制的轨迹点（绘制与转发共用一帧，天然限频） */
+  let pendingPoints = null;
 
   function createOverlay() {
     const host = document.createElement('hymt-gesture-trail');
@@ -167,6 +187,8 @@
       cancelAnimationFrame(drawFrame);
       drawFrame = 0;
     }
+    pendingPoints = null;
+
     if (!overlay) return;
 
     overlay.host.remove();
@@ -189,21 +211,328 @@
     overlay.path.setAttribute('d', d);
   }
 
-  function scheduleDraw() {
+  function scheduleDraw(points) {
+    pendingPoints = points;
     if (drawFrame) return;
+
     drawFrame = requestAnimationFrame(() => {
       drawFrame = 0;
-      drawTrail(state.points);
+      const current = pendingPoints;
+      pendingPoints = null;
+      if (current) drawTrail(current);
+      // 转发与绘制同频，避免每条 pointermove 都发一条消息
+      flushRelay();
     });
+  }
+
+  /* ==========================================================================
+   * 跨框架轨迹转发
+   *
+   * 轨迹浮层只有画在顶层文档里才不会被子框架的边界裁掉：
+   * 手势起自 iframe 时，轨迹点逐级 postMessage 给父框架，每级换算成父框架的视口坐标，
+   * 最终由顶层框架用同一个浮层绘制；顶层因此也知道松手时该拦掉网页右键菜单。
+   * ======================================================================== */
+
+  const RELAY_KEY = '__hymtGestureTrail';
+  /** 顶层超过该时间没收到新轨迹就认为转发已中断，丢弃残留轨迹 */
+  const RELAY_TIMEOUT = 3000;
+  /** 心跳间隔：用户按住右键停顿不动时，也能让顶层知道手势还在进行 */
+  const RELAY_HEARTBEAT = 1000;
+
+  const isTopFrame = window.top === window;
+
+  /** 当前框架是手势起点时的转发状态 */
+  const outbound = {
+    active: false,
+    id: '',
+    sent: 0,
+    heartbeat: 0
+  };
+
+  /** 顶层框架：正在镜像的子框架轨迹 */
+  const foreign = {
+    id: '',
+    points: [],
+    distance: 0,
+    timer: 0
+  };
+
+  function createSessionId() {
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  /** 向父框架转发；顶层没有父框架（自己绘制），直接返回 */
+  function postToParent(kind, points, suppress) {
+    if (isTopFrame) return;
+
+    const message = {
+      [RELAY_KEY]: kind,
+      id: outbound.id,
+      width: window.innerWidth,
+      height: window.innerHeight
+    };
+
+    if (points) {
+      message.points = points.map((point) => [
+        Math.round(point.x * 100) / 100,
+        Math.round(point.y * 100) / 100
+      ]);
+    }
+    if (suppress !== undefined) message.suppress = suppress;
+
+    try {
+      window.parent.postMessage(message, '*');
+    } catch (error) {
+      // 父框架不可达（页面正在卸载等），放弃转发
+      outbound.active = false;
+    }
+  }
+
+  /** 轨迹出现时开始转发：带上已有的点，顶层画出的轨迹才完整 */
+  function beginRelay() {
+    if (isTopFrame || outbound.active) return;
+
+    outbound.active = true;
+    outbound.id = createSessionId();
+    outbound.sent = state.points.length;
+    postToParent('begin', state.points);
+
+    // 心跳让顶层知道手势还在进行（止住不动时轨迹不会超时消失）
+    outbound.heartbeat = setInterval(() => {
+      if (outbound.active) postToParent('alive');
+    }, RELAY_HEARTBEAT);
+  }
+
+  /** 把尚未转发的点送出去（每帧一次，和绘制同频） */
+  function flushRelay() {
+    if (!outbound.active || outbound.sent >= state.points.length) return;
+
+    postToParent('points', state.points.slice(outbound.sent));
+    outbound.sent = state.points.length;
+  }
+
+  /** 手势结束：补上最后的点，并告知顶层要不要继续拦右键菜单 */
+  function endRelay(suppress) {
+    if (!outbound.active) return;
+
+    flushRelay();
+    outbound.active = false;
+    if (outbound.heartbeat) {
+      clearInterval(outbound.heartbeat);
+      outbound.heartbeat = 0;
+    }
+    postToParent('end', null, suppress);
+  }
+
+  /* --------------------------------------------------------------------------
+   * 接收并向上转发子框架的轨迹
+   * ------------------------------------------------------------------------ */
+
+  /** event.source → iframe 元素，避免每条消息都重新遍历 DOM */
+  const childFrames = new WeakMap();
+
+  /** event.source 是否真的是当前文档里的直接子框架 */
+  function isChildWindow(source) {
+    if (!source) return false;
+
+    const frames = window.frames;
+    for (let i = 0; i < frames.length; i += 1) {
+      if (frames[i] === source) return true;
+    }
+    return false;
+  }
+
+  /** 找出子框架对应的 iframe / frame 元素（会展开 open shadow root） */
+  function findChildFrame(source) {
+    const cached = childFrames.get(source);
+    if (cached && cached.isConnected && cached.contentWindow === source) return cached;
+
+    for (const element of document.querySelectorAll('iframe, frame')) {
+      if (element.contentWindow === source) {
+        childFrames.set(source, element);
+        return element;
+      }
+    }
+
+    // iframe 可能被放在 open shadow root 里；闭包 shadow root 无法访问
+    const roots = [];
+    for (const element of document.querySelectorAll('*')) {
+      if (element.shadowRoot) roots.push(element.shadowRoot);
+    }
+    while (roots.length) {
+      const root = roots.pop();
+      for (const frame of root.querySelectorAll('iframe, frame')) {
+        if (frame.contentWindow === source) {
+          childFrames.set(source, frame);
+          return frame;
+        }
+      }
+      for (const element of root.querySelectorAll('*')) {
+        if (element.shadowRoot) roots.push(element.shadowRoot);
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * 子框架内容区在当前框架视口中的实际位置与大小
+   * clientLeft / clientTop 是边框宽度；rect / offset 的比值抵消 CSS 变换的缩放
+   */
+  function childViewportRect(element) {
+    const rect = element.getBoundingClientRect();
+    const offsetWidth = element.offsetWidth || rect.width || 1;
+    const offsetHeight = element.offsetHeight || rect.height || 1;
+    const scaleX = rect.width / offsetWidth;
+    const scaleY = rect.height / offsetHeight;
+
+    return {
+      left: rect.left + element.clientLeft * scaleX,
+      top: rect.top + element.clientTop * scaleY,
+      width: (element.clientWidth || offsetWidth) * scaleX,
+      height: (element.clientHeight || offsetHeight) * scaleY
+    };
+  }
+
+  /** 子框架视口坐标 → 当前框架视口坐标（两者视口宽度的比值就是缩放） */
+  function toFramePoint(rect, width, height, x, y) {
+    const scaleX = width > 0 ? rect.width / width : 1;
+    const scaleY = height > 0 ? rect.height / height : 1;
+    return [rect.left + x * scaleX, rect.top + y * scaleY];
+  }
+
+  function onFrameMessage(event) {
+    const data = event.data;
+    if (!data || typeof data !== 'object') return;
+
+    const kind = data[RELAY_KEY];
+    if (kind !== 'begin' && kind !== 'points' && kind !== 'alive' && kind !== 'end') return;
+    if (!isChildWindow(event.source)) return;
+
+    const element = findChildFrame(event.source);
+    if (!element) return;
+
+    // 消息里的宽高是子框架的视口尺寸，用它和 iframe 内容区的比值换算坐标
+    const viewport = childViewportRect(element);
+    const width = Number(data.width) || 0;
+    const height = Number(data.height) || 0;
+    const points = Array.isArray(data.points)
+      ? data.points
+          .filter((point) => Array.isArray(point) && point.length >= 2)
+          .map((point) =>
+            toFramePoint(viewport, width, height, Number(point[0]) || 0, Number(point[1]) || 0)
+          )
+      : [];
+
+    if (isTopFrame) {
+      applyForeignTrail(kind, data, points);
+      return;
+    }
+
+    // 中间框架：换算成自己的坐标后继续往上传
+    const message = {
+      [RELAY_KEY]: kind,
+      id: data.id,
+      width: window.innerWidth,
+      height: window.innerHeight
+    };
+    if (points.length) message.points = points;
+    if (kind === 'end') message.suppress = Boolean(data.suppress);
+
+    try {
+      window.parent.postMessage(message, '*');
+    } catch (error) {
+      // 父框架不可达，轨迹到此为止
+    }
+  }
+
+  /** 顶层框架：把子框架的轨迹画在自己的浮层上 */
+  function applyForeignTrail(kind, data, points) {
+    // 顶层自己正在手势时不可能同时有子框架轨迹（一轮只有一次拖动）
+    if (state.tracking) return;
+
+    const id = typeof data.id === 'string' ? data.id : '';
+
+    if (kind === 'end') {
+      if (id !== foreign.id) return;
+      if (data.suppress) state.suppressMenuUntil = performance.now() + MENU_SUPPRESS_WINDOW;
+      clearForeignTrail();
+      return;
+    }
+
+    if (kind === 'alive') {
+      if (id === foreign.id) resetForeignTimer();
+      return;
+    }
+
+    if (id !== foreign.id) {
+      // 新会话（或 begin 丢了），从头开始记
+      foreign.id = id;
+      foreign.points = [];
+      foreign.distance = 0;
+    }
+
+    for (const point of points) {
+      const last = foreign.points[foreign.points.length - 1];
+      if (last) {
+        const step = Math.hypot(point[0] - last.x, point[1] - last.y);
+        if (step < 0.01) continue;
+        foreign.distance += step;
+      }
+      foreign.points.push({ x: point[0], y: point[1] });
+    }
+
+    if (!foreign.points.length) return;
+
+    resetForeignTimer();
+
+    if (foreign.points.length >= 2) {
+      ensureOverlay();
+      scheduleDraw(foreign.points);
+    }
+  }
+
+  function resetForeignTimer() {
+    if (foreign.timer) clearTimeout(foreign.timer);
+    foreign.timer = setTimeout(() => {
+      foreign.timer = 0;
+      clearForeignTrail();
+    }, RELAY_TIMEOUT);
+  }
+
+  function clearForeignTrail() {
+    if (foreign.timer) {
+      clearTimeout(foreign.timer);
+      foreign.timer = 0;
+    }
+
+    const hadTrail = foreign.points.length > 0;
+    foreign.id = '';
+    foreign.points = [];
+    foreign.distance = 0;
+
+    // 顶层自己的手势正在使用时不能拆浮层
+    if (hadTrail && !state.tracking) destroyOverlay();
   }
 
   /* ==========================================================================
    * 手势识别
    * ======================================================================== */
 
+  /**
+   * 方向向量 → U / D / L / R
+   * 只有方向落在某个方向锥内才算命中；锥外（对角附近的模糊区）返回 null，
+   * 调用方会把这部分轨迹当作拐弯过渡直接忽略
+   */
   function directionOf(dx, dy) {
-    if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? 'R' : 'L';
-    return dy >= 0 ? 'D' : 'U';
+    if (dx === 0 && dy === 0) return null;
+
+    // 与水平轴的夹角：0° 为纯水平，90° 为纯垂直
+    const angle = (Math.atan2(Math.abs(dy), Math.abs(dx)) * 180) / Math.PI;
+
+    if (angle <= HALF_CONE) return dx >= 0 ? 'R' : 'L';
+    if (angle >= 90 - HALF_CONE) return dy >= 0 ? 'D' : 'U';
+    return null;
   }
 
   /** Ramer–Douglas–Peucker 轨迹简化 */
@@ -265,29 +594,58 @@
 
   /**
    * 采样点 → 方向串
-   * 1. RDP 简化去掉手抖
-   * 2. 每段按主轴映射为 U / D / L / R
-   * 3. 过滤短于 MIN_DIRECTION_LENGTH 的段，并合并相邻同方向
-   *    即每个方向都要划够长度，例如「下右」需要向下、向右各超过 30px
+   * 1. RDP 简化去掉手抖（偏差不超过 SIMPLIFY_TOLERANCE 的抖动不产生折点），
+   *    拐弯处的圆弧会被拆成若干折线段
+   * 2. 每段按方向锥分类；锥外的段（拐弯时的模糊轨迹）直接跳过：
+   *    它既不产生方向，也不打断当前段，所以「下 → 斜线 → 下」仍是一段「下」，
+   *    「下 → 斜线 → 右」则得到「下」「右」两段
+   * 3. 合并相邻同方向段
+   * 4. 严格判定：只要有方向段短于 MIN_DIRECTION_LENGTH 就返回空串（整个手势无效），
+   *    而不是丢弃这一段；否则「先向右 20px 再向下」会被简化成「下」而误触发
+   * 5. 单方向手势还要求整条轨迹的总位移也落在同一个方向锥内，否则视为「在夹角外」，
+   *    整个操作无效
+   * 6. 方向串必须与 GESTURES 中的键完全一致，多一段、少一段都不触发
    */
   function extractDirections(points) {
     const vertices = simplifyPath(points, SIMPLIFY_TOLERANCE);
-    let pattern = '';
-    let lastDirection = '';
+
+    /** @type {{ direction: 'U' | 'D' | 'L' | 'R', length: number }[]} */
+    const segments = [];
 
     for (let i = 1; i < vertices.length; i += 1) {
       const dx = vertices[i].x - vertices[i - 1].x;
       const dy = vertices[i].y - vertices[i - 1].y;
-      if (Math.hypot(dx, dy) < MIN_DIRECTION_LENGTH) continue;
+      const length = Math.hypot(dx, dy);
+      if (length === 0) continue;
 
+      // 拐弯处的过渡轨迹不在任何方向锥内，直接忽略
       const direction = directionOf(dx, dy);
-      if (direction === lastDirection) continue;
+      if (!direction) continue;
 
-      pattern += direction;
-      lastDirection = direction;
+      const previous = segments[segments.length - 1];
+      if (previous && previous.direction === direction) {
+        previous.length += length;
+      } else {
+        segments.push({ direction, length });
+      }
     }
 
-    return pattern;
+    if (segments.length === 0) return '';
+
+    // 严格判定：任何一段太短都直接判为无效，而不是忽略这一段
+    for (const segment of segments) {
+      if (segment.length < MIN_DIRECTION_LENGTH) return '';
+    }
+
+    // 单方向手势：整条轨迹的总位移也必须落在同一个方向上。
+    // 前面对折线段逐个判定，缓慢偏斜的长曲线可能各小段都在锥内、整体却已明显偏出夹角
+    if (segments.length === 1) {
+      const start = points[0];
+      const end = points[points.length - 1];
+      if (directionOf(end.x - start.x, end.y - start.y) !== segments[0].direction) return '';
+    }
+
+    return segments.map((segment) => segment.direction).join('');
   }
 
   /* ==========================================================================
@@ -366,6 +724,8 @@
    * ======================================================================== */
 
   function cancelTracking() {
+    if (outbound.active) endRelay(false);
+
     state.tracking = false;
     state.pointerId = -1;
     state.points = [];
@@ -389,6 +749,10 @@
     }
 
     const distance = state.distance;
+
+    // 轨迹正转发给顶层的话，先补上最后的点、再通知结束
+    if (outbound.active) endRelay(execute && distance >= DRAW_START_DISTANCE);
+
     state.pointerId = -1;
     state.points = [];
     state.distance = 0;
@@ -416,6 +780,8 @@
 
     // 正常不会走到这里（上一轮手势未结束），保险起见先清空
     cancelTracking();
+    // 新手势开始时，丢弃可能残留的子框架轨迹
+    clearForeignTrail();
 
     state.suppressMenuUntil = 0;
     state.tracking = true;
@@ -457,7 +823,8 @@
 
     if (state.distance >= DRAW_START_DISTANCE) {
       ensureOverlay();
-      scheduleDraw();
+      beginRelay();
+      scheduleDraw(state.points);
     }
   }
 
@@ -473,9 +840,15 @@
 
   function onContextMenu(event) {
     if (!state.enabled) return;
-    if (performance.now() > state.suppressMenuUntil) return;
+
+    // 起自子框架的轨迹：结束消息可能比 contextmenu 晚到，
+    // 只要顶层浮层上还有这条轨迹就一并拦掉（结束消息到达时浮层会被移除）
+    const foreignTrail = foreign.distance >= DRAW_START_DISTANCE && foreign.points.length > 0;
+
+    if (performance.now() > state.suppressMenuUntil && !foreignTrail) return;
 
     state.suppressMenuUntil = 0;
+    clearForeignTrail();
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
@@ -486,4 +859,5 @@
   window.addEventListener('pointerup', onPointerUp, true);
   window.addEventListener('pointercancel', onPointerCancel, true);
   window.addEventListener('contextmenu', onContextMenu, true);
+  window.addEventListener('message', onFrameMessage);
 })();

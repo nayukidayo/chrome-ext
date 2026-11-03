@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "工具箱：代理切换 + 段落翻译 + 鼠标手势",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "在系统代理与直连之间快速切换；按住右键划动手势即可翻译鼠标起点处的段落，也可关闭、恢复、刷新、前进后退页面或在整页顶部与底部之间跳转。",
   "minimum_chrome_version": "156",
   "permissions": ["proxy", "storage", "sessions"],
@@ -34,7 +34,9 @@
       "js": ["content/translate.js", "content/gesture.js"],
       "css": ["content/translate.css"],
       "run_at": "document_idle",
-      "all_frames": true
+      "all_frames": true,
+      "match_about_blank": true,
+      "match_origin_as_fallback": true
     }
   ]
 }
