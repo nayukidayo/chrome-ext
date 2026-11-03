@@ -16,7 +16,7 @@
  * - 只按「每个方向段」的长度判定：每段都要长于 MIN_DIRECTION_LENGTH（30px），
  *   如「下右」要求向下、向右各超过 30px；不看总轨迹长度
  * - 只要按住右键滑动过，就拦掉网页右键菜单（不要求匹配到手势）
- * - 轨迹是单色实线，绘制在 Shadow DOM 里的全屏 canvas 上，
+ * - 轨迹是单色实线，绘制在 Shadow DOM 里的全屏 SVG 上（矢量，无需处理 DPR），
  *   使用构造式样式表，避免被页面样式 / CSP 干扰
  */
 
@@ -40,8 +40,6 @@
   const DRAW_START_DISTANCE = 10;
   /** 轨迹点上限，防止长距离拖动占用过多内存 */
   const MAX_POINTS = 4000;
-  /** 松手后轨迹淡出时长（毫秒） */
-  const FADE_DURATION = 200;
   /** 拦截右键菜单的时间窗：contextmenu 紧跟 pointerup 触发 */
   const MENU_SUPPRESS_WINDOW = 500;
 
@@ -96,18 +94,27 @@
    * 轨迹浮层
    * ======================================================================== */
 
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+
   const OVERLAY_CSS = `
-    canvas {
+    svg {
       display: block;
       width: 100%;
       height: 100%;
     }
+
+    path {
+      fill: none;
+      stroke: rgb(${TRAIL_RGB});
+      stroke-width: ${TRAIL_WIDTH};
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
   `;
 
-  /** @type {{ host: HTMLElement, canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D | null, width: number, height: number } | null} */
+  /** @type {{ host: HTMLElement, svg: SVGSVGElement, path: SVGPathElement } | null} */
   let overlay = null;
   let drawFrame = 0;
-  let fadeFrame = 0;
 
   function createOverlay() {
     const host = document.createElement('hymt-gesture-trail');
@@ -133,37 +140,20 @@
     sheet.replaceSync(OVERLAY_CSS);
     shadow.adoptedStyleSheets = [sheet];
 
-    const canvas = document.createElement('canvas');
-    shadow.appendChild(canvas);
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('width', '100%');
+    svg.setAttribute('height', '100%');
+    const path = document.createElementNS(SVG_NS, 'path');
+    svg.appendChild(path);
+    shadow.appendChild(svg);
     (document.documentElement || document.body).appendChild(host);
 
-    overlay = { host, canvas, ctx: canvas.getContext('2d'), width: 0, height: 0 };
-    resizeOverlay();
+    overlay = { host, svg, path };
     return overlay;
   }
 
-  function resizeOverlay() {
-    if (!overlay) return;
-
-    const dpr = window.devicePixelRatio || 1;
-    const width = Math.max(1, window.innerWidth);
-    const height = Math.max(1, window.innerHeight);
-    const pixelWidth = Math.round(width * dpr);
-    const pixelHeight = Math.round(height * dpr);
-
-    overlay.width = width;
-    overlay.height = height;
-
-    if (overlay.canvas.width !== pixelWidth || overlay.canvas.height !== pixelHeight) {
-      overlay.canvas.width = pixelWidth;
-      overlay.canvas.height = pixelHeight;
-    }
-    if (overlay.ctx) overlay.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  }
-
   function ensureOverlay() {
-    if (overlay) resizeOverlay();
-    else createOverlay();
+    if (!overlay) createOverlay();
   }
 
   function destroyOverlay() {
@@ -171,68 +161,34 @@
       cancelAnimationFrame(drawFrame);
       drawFrame = 0;
     }
-    if (fadeFrame) {
-      cancelAnimationFrame(fadeFrame);
-      fadeFrame = 0;
-    }
     if (!overlay) return;
 
     overlay.host.remove();
     overlay = null;
   }
 
-  /** 单色实线：整条轨迹一笔描完，没有描边也没有渐变 */
-  function drawTrail(points, opacity) {
-    if (!overlay || !overlay.ctx) return;
+  /** 单色实线：把轨迹点写进 path 的 d，SVG 是矢量，无需处理 DPR */
+  function drawTrail(points) {
+    if (!overlay) return;
 
-    const ctx = overlay.ctx;
-    ctx.clearRect(0, 0, overlay.width, overlay.height);
+    if (points.length < 2) {
+      overlay.path.removeAttribute('d');
+      return;
+    }
 
-    if (points.length < 2 || opacity <= 0) return;
-
-    ctx.beginPath();
-    ctx.moveTo(points[0].x, points[0].y);
-    for (let i = 1; i < points.length; i += 1) ctx.lineTo(points[i].x, points[i].y);
-
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.lineWidth = TRAIL_WIDTH;
-    ctx.strokeStyle = `rgba(${TRAIL_RGB}, ${opacity})`;
-    ctx.stroke();
+    let d = `M${points[0].x} ${points[0].y}`;
+    for (let i = 1; i < points.length; i += 1) {
+      d += `L${points[i].x} ${points[i].y}`;
+    }
+    overlay.path.setAttribute('d', d);
   }
 
   function scheduleDraw() {
     if (drawFrame) return;
     drawFrame = requestAnimationFrame(() => {
       drawFrame = 0;
-      drawTrail(state.points, 1);
+      drawTrail(state.points);
     });
-  }
-
-  function fadeOutTrail(points) {
-    if (!overlay) return;
-
-    if (drawFrame) {
-      cancelAnimationFrame(drawFrame);
-      drawFrame = 0;
-    }
-    if (fadeFrame) {
-      cancelAnimationFrame(fadeFrame);
-      fadeFrame = 0;
-    }
-
-    const startedAt = performance.now();
-    const step = (now) => {
-      const progress = Math.min(1, Math.max(0, (now - startedAt) / FADE_DURATION));
-      drawTrail(points, 1 - progress);
-      if (progress < 1) {
-        fadeFrame = requestAnimationFrame(step);
-      } else {
-        fadeFrame = 0;
-        destroyOverlay();
-      }
-    };
-    fadeFrame = requestAnimationFrame(step);
   }
 
   /* ==========================================================================
@@ -440,7 +396,8 @@
       if (action) runAction(action, start);
     }
 
-    fadeOutTrail(points);
+    // 不做淡出：手势结束后轨迹立即消失
+    destroyOverlay();
   }
 
   function onPointerDown(event) {
