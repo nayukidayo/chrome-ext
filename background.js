@@ -3,7 +3,8 @@
  *
  * 1) 代理切换：在「代理(fixed_servers)」与「直连(direct)」之间切换（chrome.proxy）
  *    —— 用 fixed_servers 而非 system，是为了给翻译接口加 bypassList（直连）
- * 2) 段落翻译：调用腾讯云 TokenHub 的 hy-mt2-lite（OpenAI 兼容 /v1/chat/completions）
+ * 2) 翻译：右键菜单「翻译」把请求转给内容脚本定位目标；译文本身由这里调用
+ *    腾讯云 TokenHub 的 hy-mt2-lite（OpenAI 兼容 /v1/chat/completions）
  * 3) 鼠标手势：内容脚本识别手势后，由这里执行关闭 / 恢复 / 刷新 / 前进后退标签页
  *
  * API Key 由用户在弹窗中填写，保存在 chrome.storage.local，
@@ -235,7 +236,7 @@ async function callModel(text, targetLang) {
   const usable = REGIONS.filter((region) => Boolean(keys[region.id]));
 
   if (usable.length === 0) {
-    throw new Error('未填写 API Key：请点击工具栏图标，在「段落翻译」中填写广州或新加坡的 TokenHub API Key');
+    throw new Error('未填写 API Key：请点击工具栏图标，在「翻译」中填写广州或新加坡的 TokenHub API Key');
   }
 
   const payload = JSON.stringify({
@@ -350,6 +351,72 @@ function translateText(rawText, targetLang) {
   inflight.set(cacheKey, job);
   return job;
 }
+
+/* ============================================================================
+ * 右键菜单
+ * ========================================================================== */
+
+const CONTEXT_MENU_ID = 'translate';
+
+/** 菜单项的可用状态跟随弹窗里的「翻译」开关 */
+async function syncTranslateMenu() {
+  try {
+    const { translateEnabled } = await chrome.storage.sync.get({ translateEnabled: true });
+    chrome.contextMenus.update(
+      CONTEXT_MENU_ID,
+      { enabled: translateEnabled !== false },
+      () => void chrome.runtime.lastError
+    );
+  } catch (error) {
+    console.warn('[translate] 同步右键菜单状态失败：', error);
+  }
+}
+
+/**
+ * Service Worker 每次启动都会执行：菜单不存在时创建。
+ * 已存在时 create 会报 duplicate id，读一下 lastError 忽略即可；
+ * 随后再把可用状态同步成当前设置。
+ */
+function ensureTranslateMenu() {
+  chrome.contextMenus.create(
+    {
+      id: CONTEXT_MENU_ID,
+      title: '翻译',
+      contexts: ['all']
+    },
+    () => {
+      void chrome.runtime.lastError;
+      void syncTranslateMenu();
+    }
+  );
+}
+
+void ensureTranslateMenu();
+
+/** 点击「翻译」：交给菜单所在框架的内容脚本定位选中文本 / 指针段落 */
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId !== CONTEXT_MENU_ID) return;
+  if (typeof tab?.id !== 'number') return;
+
+  chrome.tabs
+    .sendMessage(
+      tab.id,
+      {
+        type: 'translate:contextMenu',
+        selectionText: typeof info.selectionText === 'string' ? info.selectionText : ''
+      },
+      { frameId: Number.isInteger(info.frameId) ? info.frameId : 0 }
+    )
+    .catch((error) => {
+      // chrome:// 等特权页面没有内容脚本，忽略即可
+      console.warn('[translate] 通知内容脚本失败：', error?.message || error);
+    });
+});
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'sync' || !changes.translateEnabled) return;
+  void syncTranslateMenu();
+});
 
 /* ============================================================================
  * 代理
@@ -624,6 +691,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 chrome.runtime.onInstalled.addListener((details) => {
   void (async () => {
+    // 安装 / 升级后兜底确保右键菜单存在（已存在时 create 会报 duplicate id，内部已忽略）
+    ensureTranslateMenu();
+
     const { proxyMode } = await chrome.storage.local.get({ proxyMode: '' });
 
     // 首次安装：直接写入 fixed_servers 配置

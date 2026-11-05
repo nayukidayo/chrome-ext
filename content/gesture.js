@@ -2,7 +2,6 @@
  * 鼠标手势内容脚本
  *
  * 按住鼠标右键在页面中划动，根据轨迹方向执行动作：
- *   左右 → 翻译手势起点处的段落
  *   下右 → 关闭当前页面
  *   左上 → 打开刚关闭的页面
  *   上下 → 刷新页面
@@ -82,7 +81,6 @@
     ['82', 'reloadTab'], // 上下：刷新
     ['4', 'goBack'], // 左：后退
     ['6', 'goForward'], // 右：前进
-    ['46', 'translate'], // 左右：翻译手势起点处的段落
     ['8', 'scrollTop'], // 上：整个页面滚动到顶部
     ['2', 'scrollBottom'] // 下：整个页面滚动到底部
   ]);
@@ -740,12 +738,7 @@
     }
   }
 
-  function runAction(action, start) {
-    if (action === 'translate') {
-      translateAtPoint(start);
-      return;
-    }
-
+  function runAction(action) {
     if (action === 'scrollTop' || action === 'scrollBottom') {
       // 手势可能起自 iframe（例如资讯站内嵌的「大家在看」板块）：
       // 子框架滚不到整页，交给后台转发给顶层框架执行
@@ -754,19 +747,6 @@
       return;
     }
     void sendAction(action);
-  }
-
-  /** 手势「左右」：翻译轨迹起点处的段落，具体定位与展示由 content/translate.js 负责 */
-  function translateAtPoint(point) {
-    if (!point) return;
-
-    const api = window.__hymtTranslate;
-    if (!api || typeof api.translateAtPoint !== 'function') {
-      console.warn('[gesture] 翻译脚本未就绪，无法翻译');
-      return;
-    }
-
-    api.translateAtPoint(point.x, point.y);
   }
 
   /* 后台转发来的动作（顶层框架的「上」/「下」） */
@@ -798,7 +778,6 @@
     state.tracking = false;
 
     const points = state.points;
-    const start = points[0];
     const last = points[points.length - 1];
     if (Number.isFinite(x) && Number.isFinite(y)) {
       const step = Math.hypot(x - last.x, y - last.y);
@@ -826,7 +805,7 @@
 
       const pattern = extractPattern(points);
       const action = GESTURES.get(pattern);
-      if (action) runAction(action, start);
+      if (action) runAction(action);
     }
 
     // 不做淡出：手势结束后轨迹立即消失

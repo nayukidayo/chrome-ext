@@ -1,13 +1,16 @@
 /**
- * 段落翻译内容脚本
+ * 翻译内容脚本
  *
- * - 对外只暴露 window.__hymtTranslate.translateAtPoint(x, y)，由鼠标手势「左右」调用
+ * - 右键菜单「翻译」点击后由后台转发到这里：
+ *   · 有选中的文本：只翻译选中内容，始终用悬浮气泡显示
+ *   · 没有选中文本：翻译右键时指针所在的段落
  * - 普通段落：译文卡片插入在段落末尾（原文下方）
  * - 链接、按钮等不便内嵌的位置，或段落被裁剪导致卡片显示不全时：改用气泡浮层
  * - 气泡在页面滚动、点击别处或按 Esc 时自动关闭；译文已缓存，再次触发直接显示
  *
  * 实现要点：
  * - 通过 caretRangeFromPoint 取得鼠标所在文字节点，向上找到最近的块级容器作为「段落」
+ * - 右键菜单点击时浏览器不提供指针坐标：在 contextmenu 捕获阶段记下位置，供后台消息到达时使用
  * - 译文面板使用自定义元素 + Shadow DOM + 构造式样式表，避免被页面样式 / CSP 干扰
  * - 样式表与模板在全文档内只解析一次，所有面板实例共享
  * - 面板内容全部使用 textContent 写入，不注入任何 HTML
@@ -278,6 +281,21 @@
   const liveRecords = new Set();
   const state = { enabled: true };
 
+  /** 选中文本专用记录：再次翻译时替换上一张气泡 */
+  const SELECTION_KEY = { selection: true };
+  let selectionRecord = null;
+
+  /** 右键菜单点击时浏览器不提供坐标，由 contextmenu 捕获阶段记下指针位置（取一次即失效） */
+  let contextPoint = null;
+
+  window.addEventListener(
+    'contextmenu',
+    (event) => {
+      contextPoint = { x: event.clientX, y: event.clientY };
+    },
+    true
+  );
+
   /* ==========================================================================
    * 设置
    * ======================================================================== */
@@ -387,6 +405,25 @@
    * 取原文
    * ======================================================================== */
 
+  /** 原文 / 选中文本共用的规范化与截断 */
+  function prepareSource(rawText) {
+    let text = String(rawText ?? '')
+      .replace(/[\u200b-\u200d\ufeff]/g, '')
+      .replace(/\u00a0/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    let truncated = false;
+    if (text.length > MAX_SOURCE_CHARS) {
+      text = text.slice(0, MAX_SOURCE_CHARS);
+      const cut = text.lastIndexOf(' ');
+      if (cut > MAX_SOURCE_CHARS * 0.6) text = text.slice(0, cut);
+      truncated = true;
+    }
+
+    return { text, truncated };
+  }
+
   function extractSource(element) {
     // 取原文时先把所有已显示的译文面板藏起来（含嵌套段落里的），避免把译文当成原文
     const hiddenRecords = [];
@@ -404,21 +441,7 @@
       for (const record of hiddenRecords) record.host.hidden = false;
     }
 
-    text = text
-      .replace(/[\u200b-\u200d\ufeff]/g, '')
-      .replace(/\u00a0/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-    let truncated = false;
-    if (text.length > MAX_SOURCE_CHARS) {
-      text = text.slice(0, MAX_SOURCE_CHARS);
-      const cut = text.lastIndexOf(' ');
-      if (cut > MAX_SOURCE_CHARS * 0.6) text = text.slice(0, cut);
-      truncated = true;
-    }
-
-    return { text, truncated };
+    return prepareSource(text);
   }
 
   /** 纯中文段落不需要再翻译（混有拉丁 / 假名 / 谚文等则照常翻译） */
@@ -444,6 +467,8 @@
       target,
       block: target.block,
       anchor: target.anchor,
+      anchorRect: target.anchorRect || null,
+      label: target.label || '',
       bubbleOnly: target.bubbleOnly,
       host,
       body: shadow.querySelector('.body'),
@@ -655,13 +680,17 @@
     const host = record.host;
     if (!record.floating || !host.isConnected) return;
 
-    const anchorEl = record.anchor || record.block;
-    if (!anchorEl || !anchorEl.isConnected) {
-      hideRecord(record);
-      return;
+    let anchor;
+    if (record.anchorRect) {
+      anchor = record.anchorRect;
+    } else {
+      const anchorEl = record.anchor || record.block;
+      if (!anchorEl || !anchorEl.isConnected) {
+        hideRecord(record);
+        return;
+      }
+      anchor = anchorEl.getBoundingClientRect();
     }
-
-    const anchor = anchorEl.getBoundingClientRect();
     const vw = viewportWidth();
     const vh = viewportHeight();
 
@@ -885,16 +914,23 @@
       record.layoutFrame = 0;
     }
 
+    if (selectionRecord === record) selectionRecord = null;
+
     exitFloatMode(record);
     record.host.remove();
     records.delete(record.target?.key || record.block);
     liveRecords.delete(record);
   }
 
+  function metaLabel(record) {
+    const base = record.label ? `${record.label} · ${MODEL_LABEL}` : MODEL_LABEL;
+    return record.truncated ? `${base} · 原文较长已截断` : base;
+  }
+
   function renderLoading(record) {
     record.retryBtn.hidden = true;
     record.hideBtn.hidden = false;
-    record.meta.textContent = MODEL_LABEL;
+    record.meta.textContent = metaLabel(record);
     record.body.classList.remove('error');
     record.body.textContent = '';
 
@@ -908,7 +944,7 @@
   function renderText(record, text) {
     record.retryBtn.hidden = true;
     record.hideBtn.hidden = false;
-    record.meta.textContent = record.truncated ? `${MODEL_LABEL} · 原文较长已截断` : MODEL_LABEL;
+    record.meta.textContent = metaLabel(record);
     record.body.classList.remove('error');
     record.body.textContent = text;
 
@@ -918,7 +954,7 @@
   function renderNote(record, text) {
     record.retryBtn.hidden = true;
     record.hideBtn.hidden = false;
-    record.meta.textContent = MODEL_LABEL;
+    record.meta.textContent = metaLabel(record);
     record.body.classList.remove('error');
     record.body.textContent = text;
 
@@ -928,7 +964,7 @@
   function renderError(record, message) {
     record.retryBtn.hidden = false;
     record.hideBtn.hidden = false;
-    record.meta.textContent = MODEL_LABEL;
+    record.meta.textContent = metaLabel(record);
     record.body.classList.add('error');
     record.body.textContent = message;
 
@@ -1041,7 +1077,146 @@
   }
 
   /* ==========================================================================
-   * 对外接口：由 content/gesture.js 在「左右」手势结束时调用
+   * 选中文本翻译
+   * ======================================================================== */
+
+  function takeContextPoint() {
+    const point = contextPoint;
+    contextPoint = null;
+    return point;
+  }
+
+  /** 当前文档里的选区：文字 + 选区矩形（用于气泡定位） */
+  function currentSelection() {
+    try {
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
+
+      const text = selection.toString();
+      if (!text.trim()) return null;
+
+      const range = selection.getRangeAt(0);
+      const rect = range.getBoundingClientRect();
+      return { text, rect: rect && (rect.width || rect.height) ? rect : null };
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function copyRect(rect) {
+    return {
+      left: rect.left,
+      top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom,
+      width: rect.width,
+      height: rect.height
+    };
+  }
+
+  /** 指针位置 → 零尺寸矩形，让气泡贴着右键位置显示 */
+  function pointRect(point) {
+    if (!point) return null;
+    return {
+      left: point.x,
+      top: point.y,
+      right: point.x,
+      bottom: point.y,
+      width: 0,
+      height: 0
+    };
+  }
+
+  /**
+   * 翻译选中的文本：始终使用悬浮气泡，不插入文档流。
+   * 气泡优先贴住选区；拿不到选区矩形时贴住右键位置，再不行才放到视口中间。
+   */
+  function translateSelection(rawText, point) {
+    if (!state.enabled) return false;
+
+    const { text, truncated } = prepareSource(rawText);
+    if (!text) return false;
+
+    pruneDetachedRecords();
+
+    // 同一时间只保留一张选中文本气泡
+    if (selectionRecord) destroyRecord(selectionRecord);
+
+    const selection = currentSelection();
+    const anchorRect =
+      (selection?.rect && copyRect(selection.rect)) ||
+      pointRect(point) ||
+      pointRect({ x: viewportWidth() / 2, y: viewportHeight() / 3 });
+
+    const active = document.activeElement;
+    const anchor =
+      active && active.nodeType === Node.ELEMENT_NODE
+        ? active
+        : document.body || document.documentElement;
+
+    const record = createRecord({
+      key: SELECTION_KEY,
+      block: null,
+      anchor,
+      anchorRect,
+      bubbleOnly: true,
+      label: '选中文本'
+    });
+
+    records.set(SELECTION_KEY, record);
+    liveRecords.add(record);
+    selectionRecord = record;
+
+    record.source = text;
+    record.truncated = truncated;
+
+    if (!needsTranslation(text)) {
+      record.status = 'done';
+      record.translation = text;
+      renderNote(record, '原文已是中文，未调用翻译');
+      showRecord(record);
+      return true;
+    }
+
+    void requestTranslation(record);
+    return true;
+  }
+
+  /**
+   * 右键菜单「翻译」入口：
+   * 有选中文本（后台传来的 selectionText，或本框架的选区）只翻选中部分，
+   * 否则翻右键指针所在的段落。
+   */
+  function translateFromContextMenu(selectionText) {
+    if (!state.enabled) return false;
+
+    const point = takeContextPoint();
+    const selected = String(selectionText || '').trim() || currentSelection()?.text?.trim() || '';
+
+    if (selected) return translateSelection(selected, point);
+
+    if (!point) return false;
+
+    const target = resolveTargetAt(point.x, point.y);
+    if (!target) return false;
+
+    toggleTarget(target);
+    return true;
+  }
+
+  try {
+    if (chrome.runtime?.onMessage) {
+      chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+        if (message?.type !== 'translate:contextMenu') return;
+        sendResponse({ ok: translateFromContextMenu(message.selectionText) });
+      });
+    }
+  } catch (error) {
+    console.warn('[HY-MT] 监听右键菜单消息失败：', error);
+  }
+
+  /* ==========================================================================
+   * 对外接口（调试与 .dev-test 自测页使用）
    *
    * 两个脚本同处一个内容脚本隔离世界，直接挂在 window 即可，
    * 网页脚本看不到这个属性。
@@ -1058,7 +1233,12 @@
   }
 
   try {
-    window.__hymtTranslate = { translateAtPoint };
+    window.__hymtTranslate = {
+      translateAtPoint,
+      translateSelection(text, x, y) {
+        return translateSelection(text, Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null);
+      }
+    };
   } catch (error) {
     console.warn('[HY-MT] 注册翻译接口失败：', error);
   }

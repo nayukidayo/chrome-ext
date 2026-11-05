@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
-  "name": "工具箱：代理切换 + 段落翻译 + 鼠标手势",
-  "version": "1.9.0",
-  "description": "在系统代理与直连之间快速切换；按住右键划动手势即可翻译鼠标起点处的段落，也可关闭、恢复、刷新、前进后退页面或在整页顶部与底部之间跳转。",
+  "name": "工具箱：代理切换 + 翻译 + 鼠标手势",
+  "version": "1.10.0",
+  "description": "在系统代理与直连之间快速切换；右键菜单可翻译指针所在段落，选中文本时只在悬浮气泡里翻译；按住右键划动手势可关闭、恢复、刷新、前进后退页面或在整页顶部与底部之间跳转。",
   "minimum_chrome_version": "156",
-  "permissions": ["proxy", "storage", "sessions"],
+  "permissions": ["proxy", "storage", "sessions", "contextMenus"],
   "host_permissions": [
     "https://tokenhub.tencentmaas.com/*",
     "https://tokenhub.tencentmaas.cn/*",

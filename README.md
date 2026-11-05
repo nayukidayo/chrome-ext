@@ -5,8 +5,8 @@ Manifest V3 扩展，包含三个功能位：
 | 功能 | 状态 | 说明 |
 | --- | --- | --- |
 | 1. 代理切换 | ✅ | 在「代理（fixed_servers）」与「直连」之间一键切换 |
-| 2. 段落翻译 | ✅ | 手势「左右」→ 翻译轨迹起点处的段落；优先内嵌，显示不开时改用气泡 |
-| 3. 鼠标手势 | ✅ | 按住右键划动：左右翻译、下右关闭页面、左上恢复页面、上下刷新、左后退、右前进、上回到顶部、下滚动到底部 |
+| 2. 翻译 | ✅ | 右键菜单「翻译」：有选区时只在悬浮气泡里翻译选中文本，否则翻译指针所在段落 |
+| 3. 鼠标手势 | ✅ | 按住右键划动：下右关闭页面、左上恢复页面、上下刷新、左后退、右前进、上回到顶部、下滚动到底部 |
 
 ## 安装
 
@@ -26,7 +26,7 @@ API Key **不互通**（只能用对应地域的 Key 调用对应地域的地址
 | 广州 | `https://tokenhub.tencentmaas.com` | `https://tokenhub.tencentmaas.cn` |
 | 新加坡 | `https://tokenhub-intl.tencentmaas.com` | `https://tokenhub-intl.tencentmaas.cn` |
 
-API Key 在**弹窗 →「段落翻译」→ 广州 / 新加坡** 两个输入框中分别填写，回车或失焦即保存：
+API Key 在**弹窗 →「翻译」→ 广州 / 新加坡** 两个输入框中分别填写，回车或失焦即保存：
 
 ```
 广州     sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
@@ -59,10 +59,11 @@ bypassList: ['*.tencentmaas.com', '*.tencentmaas.cn', 'localhost', '127.0.0.1', 
 工具栏角标显示当前状态（`代理` / `直连`）。
 如果代理设置已被其他扩展或系统策略接管（`levelOfControl` 不是本扩展可控），弹窗会提示并禁用按钮。
 
-### 2. 段落翻译
+### 2. 翻译
 
-- **触发**：按住右键先向左、再向右划动（手势「左右」，两个方向各超过 20px 后松手），翻译鼠标轨迹起点所在的段落。
-- **定位**：用 `caretRangeFromPoint` 取鼠标下的文字节点，向上找最近的块级容器（`p`、`li`、`td`、`div` 等）作为「段落」。
+- **触发**：在页面中点击鼠标右键，再点浏览器菜单里的「翻译」。
+- **选中文本**：右键时如果存在选中的文本，只翻译选中内容，并且**始终在悬浮气泡中显示**，不插入文档流。
+- **段落定位**：没有选中文本时，翻译右键指针所在的段落。用 `caretRangeFromPoint` 取鼠标下的文字节点，向上找最近的块级容器（`p`、`li`、`td`、`div` 等）作为「段落」。
 - **内嵌展示**：译文卡片插入在该段落末尾（原文下方），使用自定义元素 + Shadow DOM + 构造式样式表，页面 CSS / CSP 基本不会干扰。
 - **气泡展示**：以下情况改用 Popover API 把卡片提升到 **top layer** 显示成气泡：
   - 链接、按钮、标签等交互元素，塞入译文会撑破布局或误触点击；
@@ -71,7 +72,7 @@ bypassList: ['*.tencentmaas.com', '*.tencentmaas.cn', 'localhost', '127.0.0.1', 
   气泡贴住目标定位：下方空间不够时翻到上方，超出视口时向内收，窗口缩放时跟随重定位；
   **滚动页面、点击别处或按 `Esc` 时自动关闭**；长译文内部可滚动。
 - **自动滚动**：若内嵌面板处于 `overflow: auto/scroll` 容器内并落到可视区之外，会微调该容器的 `scrollTop`（不影响整页滚动）。
-- **再次触发**：对同一段落再划一次「左右」会隐藏已显示的译文；译文已缓存，第三次触发直接显示而不重复请求。
+- **再次触发**：对同一段落再点一次「翻译」会隐藏已显示的译文；译文已缓存，第三次触发直接显示而不重复请求。
 - **跳过**：输入框、下拉框、可编辑区域、`pre/code` 等不翻译，保留页面原生行为。
 
 请求由后台 Service Worker 发出（内容脚本不直接联网）：
@@ -106,7 +107,6 @@ Authorization: Bearer <该地域的 key>
 
 | 手势 | 动作 | 实现方式 |
 | --- | --- | --- |
-| 左右 | 翻译手势起点处的段落 | 内容脚本调用 `content/translate.js` |
 | 下右 | 关闭当前页面 | 后台 `chrome.tabs.remove` |
 | 左上 | 打开刚关闭的页面 | 后台 `chrome.sessions.restore` |
 | 上下 | 刷新页面 | 后台 `chrome.tabs.reload` |
@@ -156,8 +156,9 @@ Authorization: Bearer <该地域的 key>
 | `proxy` | 切换代理模式（fixed_servers / direct） |
 | `storage` | 保存代理模式、代理地址、两把 API Key、翻译开关与鼠标手势开关 |
 | `sessions` | 恢复最近关闭的标签页（`chrome.sessions`） |
+| `contextMenus` | 在浏览器右键菜单中添加「翻译」 |
 | `host_permissions`（TokenHub 广州 / 新加坡域名） | 后台 Service Worker 调用翻译接口 |
-| `content_scripts` 的 `<all_urls>` | 在所有网页监听右键手势与段落翻译 |
+| `content_scripts` 的 `<all_urls>` | 在所有网页监听右键菜单翻译消息与右键手势 |
 
 ## 目录结构
 
@@ -165,9 +166,9 @@ Authorization: Bearer <该地域的 key>
 manifest.json
 background.js            # Service Worker：代理切换 + 调用 HY-MT2-Lite
 content/
-  translate.js           # 段落定位、译文卡片 / 气泡、对外提供 translateAtPoint
+  translate.js           # 选中文本 / 段落定位、译文卡片 / 气泡、右键菜单消息处理
   translate.css          # 仅打印时隐藏译文
-  gesture.js             # 右键手势识别、轨迹浮层、整页滚动、调用翻译
+  gesture.js             # 右键手势识别、轨迹浮层、整页滚动
 popup/
   popup.html / popup.css / popup.js
 icons/                   # 16/32/48/128 图标
@@ -183,7 +184,7 @@ icons/                   # 16/32/48/128 图标
   滚动页面、点击别处或按 `Esc` 关闭后，再次触发会重新判定。
 - 代理地址写在 `chrome.storage.local`（默认 `http://127.0.0.1:10801`），弹窗里可直接修改；支持 `http/https/socks4/socks5/quic`。
 - 若代理需要认证，扩展无法代替你输入账号密码，这类请求会失败（本地代理通常不需要）。
-- Chrome 不允许在 `chrome://`、Chrome 应用商店等特权页面注入内容脚本，鼠标手势在这些页面同样不可用。
+- Chrome 不允许在 `chrome://`、Chrome 应用商店等特权页面注入内容脚本，右键菜单翻译与鼠标手势在这些页面同样不可用。
 - 若段落位于跨域 iframe 内，需要该 iframe 允许注入（已开启 `all_frames`）。
 - 部分用 Canvas / 自定义渲染的「文字」不在 DOM 中，无法翻译。
 - 右键手势依赖鼠标事件：触屏、部分仅支持触控笔的设备无法使用； macOS 上右键菜单在按下时就弹出，手势体验可能不完整。

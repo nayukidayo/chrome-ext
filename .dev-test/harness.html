@@ -81,7 +81,10 @@
   <body>
     <h1>Content script test</h1>
     <p style="color: #666">
-      用法：按住鼠标右键先向左、再向右拖动（手势「左右」）即可翻译划动起点处的段落；气泡会在滚动或点击别处时消失。
+      用法：本页注入了 translate.js 与 gesture.js，但不会出现真实的扩展右键菜单。
+      可在控制台执行 <code>__contextTranslate('', 320, 240)</code> 模拟「右键点段落 → 翻译」，
+      或执行 <code>__contextTranslate('选中的文本')</code> 模拟选中文本翻译；
+      气泡会在滚动或点击别处时消失。
     </p>
     <p id="p1">
       The quick brown fox jumps over the lazy dog. This paragraph is used to verify the translation panel
@@ -140,7 +143,12 @@
         runtime: {
           lastError: null,
           getURL: (path) => path,
-          onMessage: { addListener: () => {} },
+          onMessage: {
+            addListener: (fn) => {
+              window.__runtimeListeners = window.__runtimeListeners || [];
+              window.__runtimeListeners.push(fn);
+            }
+          },
           sendMessage: (message) => {
             window.__messages = window.__messages || [];
             window.__messages.push(message);
@@ -152,6 +160,18 @@
         storage: {
           sync: { get: (defaults, cb) => cb(defaults) },
           onChanged: { addListener: () => {} }
+        }
+      };
+
+      /** 模拟后台转发来的右键菜单消息；selectionText 为空时按指针位置翻译段落 */
+      window.__contextTranslate = (selectionText = '', x, y) => {
+        if (Number.isFinite(x) && Number.isFinite(y)) {
+          window.dispatchEvent(new MouseEvent('contextmenu', { clientX: x, clientY: y }));
+        }
+        for (const listener of window.__runtimeListeners || []) {
+          listener({ type: 'translate:contextMenu', selectionText }, {}, (response) => {
+            console.log('[context translate]', response);
+          });
         }
       };
     </script>
